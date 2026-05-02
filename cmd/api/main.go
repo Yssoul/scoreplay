@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,55 +11,101 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ygalmessas/scoreplay/internal/config"
 	"github.com/ygalmessas/scoreplay/internal/httpx"
+	"github.com/ygalmessas/scoreplay/internal/postgres"
+	"github.com/ygalmessas/scoreplay/internal/tags"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	mux := http.NewServeMux()
+	if err := run(logger); err != nil {
+		logger.Error("api exited with error", slog.Any("err", err))
+		os.Exit(1)
+	}
+}
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	addr := ":8080"
-	srv := &http.Server{
-		Addr:    addr,
-		Handler: httpx.LoggerMiddleware(logger)(mux),
-		//TODO: Review these values and use constants
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+// run holds the full startup/shutdown lifecycle.
+func run(logger *slog.Logger) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("init postgres: %w", err)
+	}
+	defer pool.Close()
+	logger.Info("postgres pool ready")
+
+	srv := newHTTPServer(cfg, logger, pool)
+	return serve(ctx, logger, srv, cfg.ShutdownTimeout)
+}
+
+// newHTTPServer assembles the HTTP server: routes, handlers, middleware and
+// timeouts.
+func newHTTPServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", healthHandler)
+
+	tagHandler := tags.NewTagHandler(tags.NewTagRepository(pool))
+	mux.HandleFunc("POST /tags", tagHandler.Create)
+
+	return &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           httpx.LoggerMiddleware(logger)(mux),
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+	}
+}
+
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// serve runs srv until ctx is cancelled or ListenAndServe fails, then performs
+// a bounded graceful shutdown. After Shutdown returns, the goroutine running
+// ListenAndServe is drained so a late error cannot be silently swallowed.
+func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, shutdownTimeout time.Duration) error {
 	serverErr := make(chan error, 1)
 	go func() {
-		logger.Info("scoreplay api listening", slog.String("addr", addr))
+		defer close(serverErr)
+		logger.Info("api listening", slog.String("addr", srv.Addr))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- err
+			serverErr <- fmt.Errorf("listen: %w", err)
 		}
 	}()
 
 	select {
 	case err := <-serverErr:
-		logger.Error("server error", slog.Any("err", err))
-		os.Exit(1)
+		return err
 	case <-ctx.Done():
 		logger.Info("shutdown signal received, draining connections")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("graceful shutdown failed", slog.Any("err", err))
-		os.Exit(1)
+		return fmt.Errorf("graceful shutdown: %w", err)
 	}
+
+	// Drain a possible late error from ListenAndServe so it is reported
+	// instead of being lost when the goroutine returns after Shutdown.
+	if err, ok := <-serverErr; ok && err != nil {
+		return err
+	}
+
 	logger.Info("server stopped cleanly")
+	return nil
 }
