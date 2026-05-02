@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: scoreplay-db
+    environment:
+      POSTGRES_USER: scoreplay
+      POSTGRES_PASSWORD: scoreplay
+      POSTGRES_DB: scoreplay
+    ports:
+      - "5432:5432"
+    volumes:
+      - scoreplay-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scoreplay -d scoreplay"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  scoreplay-db-data:

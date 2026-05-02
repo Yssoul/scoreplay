@@ -56,6 +56,10 @@ func (h *TagHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	tag := Tag{ID: id, Name: req.Name}
 	if err := h.tagRepository.CreateTag(r.Context(), tag); err != nil {
+		if errors.Is(err, ErrNameConflict) {
+			httpx.WriteError(w, r, fmt.Errorf("%w: %w", httpx.ErrConflict, err))
+			return
+		}
 		httpx.WriteError(w, r, fmt.Errorf("%w: error creating tag: %w", httpx.ErrInternal, err))
 		return
 	}

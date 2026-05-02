@@ -34,7 +34,7 @@ Although it is not required for this project, consider the potential future need
 - The application must be written in Golang.
 - The application should be working and production-ready.
 - Code quality should meet production-level standards.
-- Include a markdown file or any separate document to explain your design an- d technology choices, what you would improve with more time, and any other things you want to share with us.
+- Include a markdown file or any separate document to explain your design and technology choices, what you would improve with more time, and any other things you want to share with us.
 
 # **Evaluation Criteria:**
 

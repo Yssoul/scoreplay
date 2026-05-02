@@ -11,6 +11,7 @@ import (
 var (
 	ErrBadRequest = errors.New("bad request")
 	ErrNotFound   = errors.New("not found")
+	ErrConflict   = errors.New("conflict")
 	ErrInternal   = errors.New("internal server error")
 )
 
@@ -74,6 +75,8 @@ func classify(err error) (status int, title string) {
 		return http.StatusBadRequest, ErrBadRequest.Error()
 	case errors.Is(err, ErrNotFound):
 		return http.StatusNotFound, ErrNotFound.Error()
+	case errors.Is(err, ErrConflict):
+		return http.StatusConflict, ErrConflict.Error()
 	default:
 		return http.StatusInternalServerError, ErrInternal.Error()
 	}
