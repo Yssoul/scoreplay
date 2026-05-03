@@ -18,6 +18,10 @@ type fakeTagRepository struct {
 	createErr  error
 	createdTag Tag
 	calls      int
+
+	listResult []Tag
+	listErr    error
+	listCalls  int
 }
 
 // Compile-time proof that the fake satisfies the interface the handler
@@ -29,6 +33,11 @@ func (f *fakeTagRepository) CreateTag(_ context.Context, tag Tag) error {
 	f.calls++
 	f.createdTag = tag
 	return f.createErr
+}
+
+func (f *fakeTagRepository) ListTags(_ context.Context) ([]Tag, error) {
+	f.listCalls++
+	return f.listResult, f.listErr
 }
 
 // newCreateRequest builds a POST /tags request with a JSON body.
@@ -156,19 +165,92 @@ func TestCreateTag_InternalError(t *testing.T) {
 	if res.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status: got %d, want %d (body=%q)", res.StatusCode, http.StatusInternalServerError, rec.Body.String())
 	}
+	assertProblemJSON(t, res, http.StatusInternalServerError)
+	assertNoErrorLeak(t, rec.Body.Bytes(), boom)
 
-	var problem httpx.Problem
-	if err := json.NewDecoder(res.Body).Decode(&problem); err != nil {
-		t.Fatalf("decode problem: %v", err)
-	}
-	if problem.Status != http.StatusInternalServerError {
-		t.Errorf("problem.status: got %d, want %d", problem.Status, http.StatusInternalServerError)
-	}
-	if strings.Contains(problem.Detail, boom.Error()) {
-		t.Errorf("problem.detail leaked internal error: %q contains %q", problem.Detail, boom.Error())
-	}
 	if repo.calls != 1 {
 		t.Errorf("repo calls: got %d, want 1", repo.calls)
+	}
+}
+
+func TestListTags_OK(t *testing.T) {
+	want := []Tag{
+		{ID: uuid.MustParse("019dea82-706a-7144-94f1-000000000001"), Name: "Real"},
+		{ID: uuid.MustParse("019dea82-706a-7144-94f1-000000000002"), Name: "Ronaldo"},
+	}
+	repo := &fakeTagRepository{listResult: want}
+	h := NewTagHandler(repo)
+
+	rec := httptest.NewRecorder()
+	h.List(rec, httptest.NewRequest(http.MethodGet, "/tags", nil))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want %d (body=%q)", res.StatusCode, http.StatusOK, rec.Body.String())
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("content-type: got %q, want application/json*", ct)
+	}
+
+	var got []Tag
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len: got %d, want %d (got=%+v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].ID != want[i].ID || got[i].Name != want[i].Name {
+			t.Errorf("row %d: got %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	if repo.listCalls != 1 {
+		t.Errorf("listCalls: got %d, want 1", repo.listCalls)
+	}
+}
+
+func TestListTags_EmptyReturnsEmptyArray(t *testing.T) {
+	// Repository returns nil; the handler must serialize "[]" and never
+	// "null", so clients can iterate without a null-guard.
+	repo := &fakeTagRepository{listResult: nil}
+	h := NewTagHandler(repo)
+
+	rec := httptest.NewRecorder()
+	h.List(rec, httptest.NewRequest(http.MethodGet, "/tags", nil))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want %d (body=%q)", res.StatusCode, http.StatusOK, rec.Body.String())
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+		t.Fatalf("body: got %q, want %q", body, "[]")
+	}
+}
+
+func TestListTags_InternalError(t *testing.T) {
+	boom := errors.New("unexpected boom: db unreachable")
+	repo := &fakeTagRepository{listErr: boom}
+	h := NewTagHandler(repo)
+
+	rec := httptest.NewRecorder()
+	h.List(rec, httptest.NewRequest(http.MethodGet, "/tags", nil))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want %d (body=%q)", res.StatusCode, http.StatusInternalServerError, rec.Body.String())
+	}
+	assertProblemJSON(t, res, http.StatusInternalServerError)
+	assertNoErrorLeak(t, rec.Body.Bytes(), boom)
+
+	if repo.listCalls != 1 {
+		t.Errorf("repo listCalls: got %d, want 1", repo.listCalls)
 	}
 }
 
@@ -189,5 +271,16 @@ func assertProblemJSON(t *testing.T, res *http.Response, wantStatus int) {
 	}
 	if problem.Title == "" {
 		t.Error("problem.title: empty, expected a non-empty title")
+	}
+}
+
+// assertNoErrorLeak verifies the response body does not contain the
+// underlying error message. This guards the security contract that 5xx
+// responses must never leak internal details (db DSN, SQLSTATE, stack
+// hints) to the client.
+func assertNoErrorLeak(t *testing.T, body []byte, internal error) {
+	t.Helper()
+	if msg := internal.Error(); strings.Contains(string(body), msg) {
+		t.Errorf("response body leaked internal error: contains %q\nbody: %s", msg, body)
 	}
 }

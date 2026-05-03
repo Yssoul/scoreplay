@@ -118,3 +118,50 @@ func TestPgRepository_CreateTag_ContextCanceled(t *testing.T) {
 		t.Errorf("count: got %d, want 0", count)
 	}
 }
+
+// On a fresh container, ListTags must return an empty, non-nil slice so
+// handlers can serialise it as "[]" without a null-check.
+func TestPgRepository_ListTags_EmptyReturnsNonNilSlice(t *testing.T) {
+	pool := newTestPool(t)
+	repo := tags.NewTagRepository(pool)
+	ctx := context.Background()
+
+	got, err := repo.ListTags(ctx)
+	if err != nil {
+		t.Fatalf("ListTags: %v", err)
+	}
+	if got == nil {
+		t.Error("got nil slice, want empty non-nil slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("len: got %d, want 0", len(got))
+	}
+}
+
+// Rows are inserted out of alphabetical order to verify the repository
+// returns them in the "name ASC" order declared by the SQL query.
+func TestPgRepository_ListTags_OrderedByNameAsc(t *testing.T) {
+	pool := newTestPool(t)
+	repo := tags.NewTagRepository(pool)
+	ctx := context.Background()
+
+	for _, name := range []string{"Messi", "Barça", "Champions League"} {
+		if err := repo.CreateTag(ctx, newTag(t, name)); err != nil {
+			t.Fatalf("CreateTag(%q): %v", name, err)
+		}
+	}
+
+	got, err := repo.ListTags(ctx)
+	if err != nil {
+		t.Fatalf("ListTags: %v", err)
+	}
+	wantNames := []string{"Barça", "Champions League", "Messi"}
+	if len(got) != len(wantNames) {
+		t.Fatalf("len: got %d, want %d (got=%+v)", len(got), len(wantNames), got)
+	}
+	for i, name := range wantNames {
+		if got[i].Name != name {
+			t.Errorf("row %d: got %q, want %q", i, got[i].Name, name)
+		}
+	}
+}

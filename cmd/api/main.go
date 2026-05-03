@@ -58,6 +58,7 @@ func newHTTPServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *
 
 	tagHandler := tags.NewTagHandler(tags.NewTagRepository(pool))
 	mux.HandleFunc("POST /tags", tagHandler.Create)
+	mux.HandleFunc("GET /tags", tagHandler.List)
 
 	return &http.Server{
 		Addr:              cfg.HTTPAddr,

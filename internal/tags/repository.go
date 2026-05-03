@@ -36,3 +36,15 @@ func (r *pgTagRepository) CreateTag(ctx context.Context, tag Tag) error {
 	}
 	return nil
 }
+
+func (r *pgTagRepository) ListTags(ctx context.Context) ([]Tag, error) {
+	rows, err := r.queries.ListTags(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list tags: %w", err)
+	}
+	out := make([]Tag, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, Tag{ID: row.ID, Name: row.Name})
+	}
+	return out, nil
+}

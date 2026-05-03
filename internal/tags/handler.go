@@ -19,6 +19,7 @@ type createTagRequest struct {
 
 type tagRepository interface {
 	CreateTag(ctx context.Context, tag Tag) error
+	ListTags(ctx context.Context) ([]Tag, error)
 }
 
 type TagHandler struct {
@@ -70,9 +71,23 @@ func (h *TagHandler) Create(w http.ResponseWriter, r *http.Request) {
 		slog.String("tag_name", tag.Name),
 	)
 
-	if err := httpx.WriteJSON(w, http.StatusCreated, tag); err != nil {
+	_ = httpx.WriteJSON(w, http.StatusCreated, tag)
+}
+
+// List returns all tags ordered by name ascending.
+// The response is always a JSON array (possibly empty), never null.
+func (h *TagHandler) List(w http.ResponseWriter, r *http.Request) {
+	res, err := h.tagRepository.ListTags(r.Context())
+	if err != nil {
+		httpx.WriteError(w, r, fmt.Errorf("%w: error listing tags: %w", httpx.ErrInternal, err))
 		return
 	}
+	if res == nil {
+		res = []Tag{}
+	}
+
+	//TODO: Review if we want to log the error if WriteJSON fails.
+	_ = httpx.WriteJSON(w, http.StatusOK, res)
 }
 
 func validate(name string) error {

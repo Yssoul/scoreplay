@@ -26,3 +26,27 @@ func (q *Queries) CreateTag(ctx context.Context, arg CreateTagParams) error {
 	_, err := q.db.Exec(ctx, createTag, arg.ID, arg.Name, arg.CreatedAt)
 	return err
 }
+
+const listTags = `-- name: ListTags :many
+SELECT id, name, created_at FROM tags ORDER BY name ASC
+`
+
+func (q *Queries) ListTags(ctx context.Context) ([]Tag, error) {
+	rows, err := q.db.Query(ctx, listTags)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Tag
+	for rows.Next() {
+		var i Tag
+		if err := rows.Scan(&i.ID, &i.Name, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
