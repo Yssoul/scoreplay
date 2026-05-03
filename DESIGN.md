@@ -142,6 +142,116 @@ keys against `^[a-zA-Z0-9_-]{1,128}$` before touching the
 filesystem. This rules out path traversal (`../`), separators, and
 absurd lengths even if a future caller passes user input.
 
+### 3.4 Media↔Tags is a join table, not an array column
+
+A media has many tags, a tag is carried by many media: this is a
+strict N:N relation. Three options were considered.
+
+- **`media.tag_ids UUID[]` with a GIN index.** Compact, one less table,
+  search by tag stays fast thanks to GIN. But Postgres cannot enforce
+  foreign keys on array elements: deleting a tag leaves orphan UUIDs
+  in every array, and any ad-hoc SQL script can break the invariant.
+  Adding metadata on the relation itself (e.g. `attached_at`) is also
+  impossible without changing the column type.
+- **`media.tags JSONB`.** Same drawbacks as the array, plus loose
+  typing. JSONB is meant for genuinely semi-structured data, not for
+  a strictly typed N:N relation. Rejected on principle.
+- **`media_tags(media_id, tag_id)` join table.** The orthodox
+  relational model. Foreign keys are enforced on both sides, an index
+  on `tag_id` makes the future "search media by tag" feature trivial
+  and fast, and the relation is open to additional columns later
+  (audit, ordering, who attached it). It is also the schema every
+  reviewer, BI tool, and migration tool expects by default.
+
+The join table wins not on raw performance — a GIN index on an array
+is roughly as fast — but on **integrity, evolvability, and principle
+of least surprise**. The brief explicitly mentions a future need to
+search media by tag, which removes any remaining ambiguity.
+
+//TODO: review this
+The two foreign keys use different `ON DELETE` rules
+(`CASCADE` on `media_id`, `RESTRICT` on `tag_id`); the rationale is
+documented in §3.7.
+
+### 3.5 The `media` table only stores what the API needs today
+
+The brief specifies the `GET /media/{id}` response as
+`{ id, name, tags, fileUrl }`, with explicit flexibility on the
+shape. We deliberately keep the `media` table aligned with that
+contract:
+
+- `name`, `file_key` and `created_at` are obviously required.
+- `content_type` is required *internally*: `GET /media/{id}/file`
+  must serve the right `Content-Type` header without re-sniffing the
+  bytes on every request. It is **not** exposed in the public DTO,
+  consistent with the brief's example.
+- `size_bytes` was considered (audits, client preload heuristics,
+  future quotas) and **rejected for now**. It is not part of the
+  brief's contract, `http.ServeContent` derives `Content-Length`
+  from the `io.ReadSeeker` for free, and adding it later via a
+  migration costs nothing. YAGNI applied consistently with the rest
+  of the codebase (see §3.3.2 for the same logic on `BlobStore.Put`).
+
+The DTO returned by `GET /media/{id}` therefore matches the brief
+exactly:
+
+```json
+{
+  "id":      "01939b...",
+  "name":    "Messi goal",
+  "tags":    [{"id": "...", "name": "Messi"}],
+  "fileUrl": "/media/01939b.../file"
+}
+```
+
+### 3.6 Defensive database constraints — deliberately not added yet
+
+Neither `tags` nor `media` carries `CHECK` constraints on `name`
+(non-blank, length cap, character set, …). Input validation lives in
+the handlers, which is enough for the current scope: every write to
+these tables goes through one of our endpoints.
+
+A more defensive posture would replicate part of that validation in
+the schema, so the database stays consistent even when a write
+bypasses the handler — psql sessions, batch jobs, future services
+sharing the same database, or a buggy migration.
+
+### 3.7 `ON DELETE` choices: who owns the cascade
+
+The `media_tags` table uses two different `ON DELETE` rules on
+purpose. They reflect a single principle: **the database owns
+referential integrity, the application owns business behaviour**.
+
+- `media_tags.media_id REFERENCES media(id) ON DELETE CASCADE`.
+  `media_tags` is not an entity; it is a join table whose rows have
+  no meaning without their parent media. Removing those rows when
+  the media disappears is the *definition* of the relation, not a
+  business rule. Postgres has been doing this faster, atomically,
+  and with stronger guarantees than any application code for
+  decades. Letting the engine do it also closes the door to orphan
+  rows when somebody runs an ad-hoc `DELETE` from psql.
+- `media_tags.tag_id REFERENCES tags(id) ON DELETE RESTRICT`.
+  Deleting a tag *is* a meaningful business event: silently
+  detaching every media that used it would lose information. The
+  database refuses, the application surfaces the error, and a
+  human (or a future endpoint) decides what to do. There is no
+  `DELETE /tags` endpoint today; this is the safe default for
+  tomorrow.
+
+The companion rule lives outside the database. When a media is
+deleted, the application is still responsible for the side effects
+the database cannot reach: removing the underlying blob from the
+storage backend, emitting audit events, notifying downstream
+services. `ON DELETE CASCADE` only takes care of the relational
+part of the cleanup; everything that is *not* a row stays the
+application's job.
+
+This split scales well: cascade is fine for relations that carry no
+domain semantics (join tables, owned aggregates). The moment a
+deletion needs to do anything more than "remove rows" — log,
+archive, refund, anonymise — the rule should flip to `RESTRICT` and
+the application must orchestrate it explicitly.
+
 ---
 
 ## 4. Project layout
