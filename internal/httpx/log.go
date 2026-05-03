@@ -25,10 +25,10 @@ func LoggerMiddleware(l *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// loggerFrom returns the logger attached to ctx, or slog.Default() if none
-// is present. The fallback keeps tests and ad-hoc code working without a
-// middleware setup.
-func loggerFrom(ctx context.Context) *slog.Logger {
+// LoggerFrom returns the logger attached to ctx by LoggerMiddleware, or
+// slog.Default() if none is present. The fallback keeps tests and ad-hoc
+// code working without a middleware setup.
+func LoggerFrom(ctx context.Context) *slog.Logger {
 	if l, ok := ctx.Value(loggerCtxKey{}).(*slog.Logger); ok && l != nil {
 		return l
 	}

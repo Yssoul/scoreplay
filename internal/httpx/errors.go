@@ -52,7 +52,7 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	detail := err.Error()
 	if status >= http.StatusInternalServerError {
 		detail = title
-		loggerFrom(r.Context()).ErrorContext(r.Context(), "request failed",
+		LoggerFrom(r.Context()).ErrorContext(r.Context(), "request failed",
 			slog.String("path", r.URL.Path),
 			slog.String("method", r.Method),
 			slog.Int("status", status),

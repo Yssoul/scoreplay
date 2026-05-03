@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -63,6 +64,11 @@ func (h *TagHandler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, fmt.Errorf("%w: error creating tag: %w", httpx.ErrInternal, err))
 		return
 	}
+
+	httpx.LoggerFrom(r.Context()).InfoContext(r.Context(), "tag created",
+		slog.String("tag_id", tag.ID.String()),
+		slog.String("tag_name", tag.Name),
+	)
 
 	if err := httpx.WriteJSON(w, http.StatusCreated, tag); err != nil {
 		return
