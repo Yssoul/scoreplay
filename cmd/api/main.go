@@ -56,7 +56,7 @@ func newHTTPServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
 
-	tagHandler := tags.NewTagHandler(tags.NewTagRepository(pool))
+	tagHandler := tags.NewTagHandler(tags.NewPgRepository(pool))
 	mux.HandleFunc("POST /tags", tagHandler.Create)
 	mux.HandleFunc("GET /tags", tagHandler.List)
 

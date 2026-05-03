@@ -13,15 +13,17 @@ import (
 	tagsdb "github.com/ygalmessas/scoreplay/internal/tags/db"
 )
 
-type pgTagRepository struct {
+// PgRepository persists tags in Postgres.
+type PgRepository struct {
 	queries *tagsdb.Queries
 }
 
-func NewTagRepository(pool *pgxpool.Pool) *pgTagRepository {
-	return &pgTagRepository{queries: tagsdb.New(pool)}
+// NewPgRepository builds a media repository.
+func NewPgRepository(pool *pgxpool.Pool) *PgRepository {
+	return &PgRepository{queries: tagsdb.New(pool)}
 }
 
-func (r *pgTagRepository) CreateTag(ctx context.Context, tag Tag) error {
+func (r *PgRepository) CreateTag(ctx context.Context, tag Tag) error {
 	query := tagsdb.CreateTagParams{
 		ID:        tag.ID,
 		Name:      tag.Name,
@@ -37,7 +39,7 @@ func (r *pgTagRepository) CreateTag(ctx context.Context, tag Tag) error {
 	return nil
 }
 
-func (r *pgTagRepository) ListTags(ctx context.Context) ([]Tag, error) {
+func (r *PgRepository) ListTags(ctx context.Context) ([]Tag, error) {
 	rows, err := r.queries.ListTags(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list tags: %w", err)

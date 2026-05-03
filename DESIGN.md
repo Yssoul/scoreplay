@@ -252,6 +252,35 @@ deletion needs to do anything more than "remove rows" — log,
 archive, refund, anonymise — the rule should flip to `RESTRICT` and
 the application must orchestrate it explicitly.
 
+### 3.8 No service layer between handlers and repositories
+
+The codebase has two layers above the database — handlers (HTTP) and
+repositories (SQL) — and no third "service" layer in
+between. This is a deliberate choice, repeated across both bounded
+contexts (`tags` and `media`).
+
+A service layer earns its place when one of three conditions holds:
+
+- multiple entry points share the same orchestration
+  (CLI, gRPC, cron, message consumer);
+- the orchestration carries genuine business rules, with branches
+  that depend on actor, state, or policy;
+- the same logic is invoked from several handlers and would
+  otherwise be duplicated.
+
+None of these apply here. The HTTP API is the only entry point, the
+sequence inside `POST /media` is a linear pipeline (validate tags →
+upload blob → transactional insert → compensate on failure), and no
+two handlers share a meaningful piece of behaviour. Adding a service
+would only move that pipeline from `media/handler.go` into
+`media/service.go` and introduce a second translation layer for
+errors (service → HTTP).
+
+The day a second consumer appears — a CLI to bulk-import media, a
+gRPC façade — the right move is to extract the pipeline into a
+service then. Doing it now would be premature abstraction with no
+benefit visible to a reviewer.
+
 ---
 
 ## 4. Project layout

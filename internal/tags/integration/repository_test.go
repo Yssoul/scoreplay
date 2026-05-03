@@ -27,7 +27,7 @@ func newTag(t *testing.T, name string) tags.Tag {
 
 func TestPgRepository_CreateTag_Success(t *testing.T) {
 	pool := newTestPool(t)
-	repo := tags.NewTagRepository(pool)
+	repo := tags.NewPgRepository(pool)
 	ctx := context.Background()
 
 	before := time.Now().UTC()
@@ -64,7 +64,7 @@ func TestPgRepository_CreateTag_Success(t *testing.T) {
 
 func TestPgRepository_CreateTag_Conflict(t *testing.T) {
 	pool := newTestPool(t)
-	repo := tags.NewTagRepository(pool)
+	repo := tags.NewPgRepository(pool)
 	ctx := context.Background()
 
 	first := newTag(t, "Messi")
@@ -96,7 +96,7 @@ func TestPgRepository_CreateTag_Conflict(t *testing.T) {
 
 func TestPgRepository_CreateTag_ContextCanceled(t *testing.T) {
 	pool := newTestPool(t)
-	repo := tags.NewTagRepository(pool)
+	repo := tags.NewPgRepository(pool)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before the call, so the insert never reaches the server
@@ -123,7 +123,7 @@ func TestPgRepository_CreateTag_ContextCanceled(t *testing.T) {
 // handlers can serialise it as "[]" without a null-check.
 func TestPgRepository_ListTags_EmptyReturnsNonNilSlice(t *testing.T) {
 	pool := newTestPool(t)
-	repo := tags.NewTagRepository(pool)
+	repo := tags.NewPgRepository(pool)
 	ctx := context.Background()
 
 	got, err := repo.ListTags(ctx)
@@ -142,7 +142,7 @@ func TestPgRepository_ListTags_EmptyReturnsNonNilSlice(t *testing.T) {
 // returns them in the "name ASC" order declared by the SQL query.
 func TestPgRepository_ListTags_OrderedByNameAsc(t *testing.T) {
 	pool := newTestPool(t)
-	repo := tags.NewTagRepository(pool)
+	repo := tags.NewPgRepository(pool)
 	ctx := context.Background()
 
 	for _, name := range []string{"Messi", "Barça", "Champions League"} {
