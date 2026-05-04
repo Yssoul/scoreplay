@@ -13,8 +13,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ygalmessas/scoreplay/internal/blobstore/fsstore"
 	"github.com/ygalmessas/scoreplay/internal/config"
 	"github.com/ygalmessas/scoreplay/internal/httpx"
+	"github.com/ygalmessas/scoreplay/internal/media"
 	"github.com/ygalmessas/scoreplay/internal/postgres"
 	"github.com/ygalmessas/scoreplay/internal/tags"
 )
@@ -46,19 +48,28 @@ func run(logger *slog.Logger) error {
 	defer pool.Close()
 	logger.Info("postgres pool ready")
 
-	srv := newHTTPServer(cfg, logger, pool)
+	blobs, err := fsstore.New(cfg.BlobDir)
+	if err != nil {
+		return fmt.Errorf("init blob store: %w", err)
+	}
+	logger.Info("blob store ready", slog.String("dir", cfg.BlobDir))
+
+	srv := newHTTPServer(cfg, logger, pool, blobs)
 	return serve(ctx, logger, srv, cfg.ShutdownTimeout)
 }
 
 // newHTTPServer assembles the HTTP server: routes, handlers, middleware and
 // timeouts.
-func newHTTPServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Server {
+func newHTTPServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool, blobs *fsstore.Store) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
 
 	tagHandler := tags.NewTagHandler(tags.NewPgRepository(pool))
 	mux.HandleFunc("POST /tags", tagHandler.Create)
 	mux.HandleFunc("GET /tags", tagHandler.List)
+
+	mediaHandler := media.NewMediaHandler(media.NewPgRepository(pool), blobs, cfg.MaxUploadBytes)
+	mux.HandleFunc("POST /media", mediaHandler.Create)
 
 	return &http.Server{
 		Addr:              cfg.HTTPAddr,

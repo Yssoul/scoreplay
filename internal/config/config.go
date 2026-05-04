@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,6 +22,14 @@ type Config struct {
 	ShutdownTimeout   time.Duration
 
 	DatabaseURL string
+
+	// MaxUploadBytes caps the size of an individual media upload. Defaults to 100 MiB.
+	MaxUploadBytes int64
+
+	// BlobDir is the local filesystem directory where the fsstore backend
+	// persists uploaded blobs. It must exist and be writable by the
+	// process. Defaults to ./var/blobs.
+	BlobDir string
 }
 
 // Load reads the environment and returns a validated Config, or an error
@@ -48,6 +57,9 @@ func Load() (Config, error) {
 	shutdownTimeout, err := getDuration("HTTP_SHUTDOWN_TIMEOUT", 10*time.Second)
 	collect(err)
 
+	maxUploadBytes, err := getInt64("MEDIA_MAX_UPLOAD_BYTES", 100<<20)
+	collect(err)
+
 	cfg := Config{
 		HTTPAddr:          getEnv("HTTP_ADDR", ":8080"),
 		ReadHeaderTimeout: readHeaderTimeout,
@@ -56,10 +68,18 @@ func Load() (Config, error) {
 		IdleTimeout:       idleTimeout,
 		ShutdownTimeout:   shutdownTimeout,
 		DatabaseURL:       databaseURL,
+		MaxUploadBytes:    maxUploadBytes,
+		BlobDir:           getEnv("MEDIA_BLOB_DIR", "./var/blobs"),
 	}
 
 	if cfg.HTTPAddr == "" {
 		errs = append(errs, errors.New("HTTP_ADDR must not be empty"))
+	}
+	if cfg.MaxUploadBytes <= 0 {
+		errs = append(errs, errors.New("MEDIA_MAX_UPLOAD_BYTES must be > 0"))
+	}
+	if cfg.BlobDir == "" {
+		errs = append(errs, errors.New("MEDIA_BLOB_DIR must not be empty"))
 	}
 	if len(errs) > 0 {
 		return Config{}, errors.Join(errs...)
@@ -122,4 +142,18 @@ func getDuration(key string, fallback time.Duration) (time.Duration, error) {
 		return fallback, fmt.Errorf("%s=%q is not a valid duration: %w", key, v, err)
 	}
 	return d, nil
+}
+
+// getInt64 mirrors getDuration: a set-but-unparseable value is surfaced
+// as an error rather than silently falling back to the default.
+func getInt64(key string, fallback int64) (int64, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fallback, fmt.Errorf("%s=%q is not a valid integer: %w", key, v, err)
+	}
+	return n, nil
 }

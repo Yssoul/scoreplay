@@ -9,10 +9,13 @@ import (
 
 // Sentinel errors.
 var (
-	ErrBadRequest = errors.New("bad request")
-	ErrNotFound   = errors.New("not found")
-	ErrConflict   = errors.New("conflict")
-	ErrInternal   = errors.New("internal server error")
+	ErrBadRequest           = errors.New("bad request")
+	ErrNotFound             = errors.New("not found")
+	ErrConflict             = errors.New("conflict")
+	ErrPayloadTooLarge      = errors.New("payload too large")
+	ErrUnsupportedMediaType = errors.New("unsupported media type")
+	ErrUnprocessable        = errors.New("unprocessable entity")
+	ErrInternal             = errors.New("internal server error")
 )
 
 // StatusClientClosedRequest is the non-standard 499 status code popularised
@@ -77,6 +80,12 @@ func classify(err error) (status int, title string) {
 		return http.StatusNotFound, ErrNotFound.Error()
 	case errors.Is(err, ErrConflict):
 		return http.StatusConflict, ErrConflict.Error()
+	case errors.Is(err, ErrPayloadTooLarge):
+		return http.StatusRequestEntityTooLarge, ErrPayloadTooLarge.Error()
+	case errors.Is(err, ErrUnsupportedMediaType):
+		return http.StatusUnsupportedMediaType, ErrUnsupportedMediaType.Error()
+	case errors.Is(err, ErrUnprocessable):
+		return http.StatusUnprocessableEntity, ErrUnprocessable.Error()
 	default:
 		return http.StatusInternalServerError, ErrInternal.Error()
 	}

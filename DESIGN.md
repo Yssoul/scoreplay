@@ -62,6 +62,36 @@ to read every commit.
   per-resource limit (1 MiB for JSON, larger for media uploads when
   added). This is a baseline DoS defense.
 
+### 2.4 Input validation: security-first, product-rules deferred
+
+Validation in this codebase enforces the **security and integrity**
+floor only:
+
+- Body size capped by `MaxBytesReader` (DoS).
+- Required fields present and non-blank (`name`, `file`).
+- Structural correctness (UUIDs parse, multipart parses, content-type
+  is a real `image/*` or `video/*` after sniffing).
+- Foreign keys exist before we write a blob (`MissingTags`).
+
+What is **deliberately not enforced** today:
+
+- Maximum length on `tags.name` and `media.name`.
+- Character whitelists (e.g. printable ASCII, no control codes).
+- Per-format size caps (e.g. images ≤ 10 MiB, videos ≤ 100 MiB).
+- Tag count cap on a single media.
+
+These are **product rules**, not security rules: the brief does not
+specify any, so picking numbers would be guesswork that locks future
+choices. The global body cap already prevents pathological inputs;
+the rest can be tightened in one place (handler validation) the day
+the product spec lands. Adding them now would also force matching
+caps across `tags` and `media` for symmetry, expanding the change set
+without a real requirement to anchor it.
+
+The rule of thumb applied: if the brief is silent and security is
+already covered upstream, fail-open with a documented limitation
+rather than fail-closed with an arbitrary number.
+
 ---
 
 ## 3. Storage layer
@@ -281,6 +311,17 @@ gRPC façade — the right move is to extract the pipeline into a
 service then. Doing it now would be premature abstraction with no
 benefit visible to a reviewer.
 
+**An internal split inside the handler is not a service layer.**
+`MediaHandler.Create` is itself split in two: the exported method
+deals exclusively with HTTP (multipart parsing, content-type
+sniffing, status mapping), and a private `createMedia` method runs
+the transport-agnostic orchestration (tag validation, blob write,
+transactional insert, compensation). Errors flow back as wrapped
+domain sentinels (`ErrUnknownTags`) and the HTTP wrapper is the only
+place that knows about `httpx`. This keeps the orchestration easy to
+read and test in isolation without introducing a new package, a new
+type, or a new injection seam.
+
 ---
 
 ## 4. Project layout
@@ -372,11 +413,18 @@ Listed in the order they would deliver the most value.
    missing.
 4. **Authentication and rate-limiting.** Out of scope for the take-home,
    but the `httpx` layer is the natural place to add middleware.
-5. **OpenAPI spec + generated types.** The handlers are simple enough
+5. **Idempotency on `POST /media`.** The endpoint is intentionally
+   not idempotent today: a network retry of a successful request
+   creates a second media. The standard remedy is an
+   `Idempotency-Key` header, backed by a small
+   `idempotency_keys (key, response_body, status, created_at)`
+   table that caches the first response for ~24h. The middleware
+   hooks naturally into `httpx`.
+6. **OpenAPI spec + generated types.** The handlers are simple enough
    that an OpenAPI-first workflow (`oapi-codegen`) would pay off
    quickly.
-6. **Observability (OpenTelemetry).** Trace HTTP → repository →
+7. **Observability (OpenTelemetry).** Trace HTTP → repository →
    pgx; pre-instrumented packages exist for each layer.
-7. **Garbage collection of orphan blobs.** The `POST /media`
+8. **Garbage collection of orphan blobs.** The `POST /media`
    transaction will best-effort delete the blob on rollback, but a
    periodic reconciliation job would catch leaks from crashes.
