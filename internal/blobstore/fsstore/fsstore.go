@@ -78,6 +78,10 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader) error {
 	}
 
 	tmpPath := filepath.Join(s.root, tmpDir, uuid.NewString())
+	// tmpPath = trusted store root + constant subdir + server-generated
+	// UUIDv4. None of those segments come from user input, so the
+	// G304 "potential file inclusion via variable" rule does not apply.
+	//nolint:gosec // path is fully server-controlled (see comment above).
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
 	if err != nil {
 		return fmt.Errorf("fsstore: create tmp: %w", err)
@@ -115,6 +119,9 @@ func (s *Store) Open(_ context.Context, key string) (io.ReadSeekCloser, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
+	// validateKey above rejects traversal/absolute keys, and pathFor
+	// always prepends the trusted store root, so G304 does not apply.
+	//nolint:gosec // key is validated and joined under s.root.
 	f, err := os.Open(s.pathFor(key))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

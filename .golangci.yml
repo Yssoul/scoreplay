@@ -1,0 +1,123 @@
+version: "2"
+
+# Project policy: production-ready lint set.
+#
+# We start from the curated `standard` default (govet, errcheck,
+# staticcheck, ineffassign, unused) and add the linters that catch
+# real bugs without dragging in style dogma.
+#
+# Style/formatting linters live under the v2 `formatters` block
+# (gofmt, gofumpt, goimports). Putting them here would conflict with
+# v2's own architecture.
+
+run:
+  timeout: 5m
+  # tests are linted too: handlers' contracts are largely expressed
+  # in *_test.go files and we want the same hygiene there.
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    # Real-bug linters
+    - bodyclose      # *http.Response bodies must be Closed
+    - errorlint      # use errors.Is/As, not == or type assertions
+    - gosec          # security-flavoured checks (path traversal, weak crypto…)
+    - nilerr         # `return nil` after a non-nil error check
+    - rowserrcheck   # rows.Err() after Scan loops
+    - sqlclosecheck  # *sql.Rows / *sql.Stmt closed
+    # Code quality linters
+    - gocritic       # opinionated but useful (rangeValCopy, ifElseChain…)
+    - gocyclo        # cyclomatic complexity ceiling
+    - misspell       # English typos in comments and identifiers
+    - revive         # idiomatic-Go warnings (replaces deprecated golint)
+    - unconvert      # remove redundant type conversions
+    - unparam        # always-the-same-value parameters
+    - usestdlibvars  # `http.MethodGet` instead of "GET", etc.
+    - whitespace     # trailing whitespace and trailing newlines
+
+  settings:
+    gocyclo:
+      # 15 leaves room for a multi-step HTTP handler (parse, validate,
+      # orchestrate, respond) without forcing a premature split. We
+      # already extract domain logic out of handlers when it grows
+      # (see DESIGN.md §3.8).
+      min-complexity: 15
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        # ifElseChain triggers on switch-friendly chains we keep
+        # explicit on purpose (e.g. error mapping in writeCreateError).
+        - ifElseChain
+
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported          # exported symbols must be documented
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-declaration
+        - name: var-naming
+
+    errorlint:
+      # We use %w in fmt.Errorf consistently; flag the rest.
+      errorf: true
+      asserts: true
+      comparison: true
+
+  exclusions:
+    rules:
+      # Generated sqlc code lives under db/ and follows its own
+      # conventions (uppercase identifiers, mass-generated docs).
+      # Linting it would create noise without buying anything: any
+      # change there is regenerated, not edited.
+      - path: internal/.*/db/.*\.go
+        linters:
+          - revive
+          - gocritic
+          - unparam
+
+      # Test files: a few rules are too strict for table-driven tests
+      # (long functions, helpers without docstrings).
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - revive
+          - unparam
+
+      # Unchecked Close() in tests: a failed Close on a test fixture
+      # cannot make the production code wrong. Wrapping every call in
+      # `_ = x.Close()` adds noise without buying signal, so we let
+      # tests off the hook for this specific check only.
+      - path: _test\.go
+        linters:
+          - errcheck
+        text: "Close"
+
+# Formatters are separate in v2 and run with `golangci-lint fmt`. We
+# enable the canonical trio so a single command keeps imports tidy
+# and the layout consistent.
+formatters:
+  enable:
+    - gofmt
+    - goimports

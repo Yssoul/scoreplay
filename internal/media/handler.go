@@ -31,8 +31,11 @@ type blobStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// MediaHandler serves the HTTP endpoints rooted at /media.
-type MediaHandler struct {
+// Handler serves the HTTP endpoints rooted at /media. It is named
+// Handler (not MediaHandler) on purpose: callers reference it as
+// media.Handler, so the package qualifier already carries the
+// "media" context. See https://github.com/golang/go/wiki/CodeReviewComments#package-names.
+type Handler struct {
 	repo  mediaRepository
 	store blobStore
 
@@ -41,9 +44,9 @@ type MediaHandler struct {
 	maxUploadBytes int64
 }
 
-// NewMediaHandler wires the dependencies.
-func NewMediaHandler(repo mediaRepository, store blobStore, maxUploadBytes int64) *MediaHandler {
-	return &MediaHandler{repo: repo, store: store, maxUploadBytes: maxUploadBytes}
+// NewHandler wires the dependencies.
+func NewHandler(repo mediaRepository, store blobStore, maxUploadBytes int64) *Handler {
+	return &Handler{repo: repo, store: store, maxUploadBytes: maxUploadBytes}
 }
 
 // multipartMaxMemory is how much of the multipart body Go is allowed
@@ -79,7 +82,7 @@ type createMediaInput struct {
 }
 
 // Create handles POST /media.
-func (h *MediaHandler) Create(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadBytes)
@@ -166,7 +169,7 @@ func (h *MediaHandler) Create(w http.ResponseWriter, r *http.Request) {
 // foreign keys, generate the id, stream the blob, persist the row,
 // compensate on failure. It is transport-agnostic on purpose so the
 // HTTP wrapper above stays focused on parsing and status mapping.
-func (h *MediaHandler) createMedia(ctx context.Context, in createMediaInput) (Media, error) {
+func (h *Handler) createMedia(ctx context.Context, in createMediaInput) (Media, error) {
 	// Pre-validate the tag set before writing the blob. Unknown tags
 	// are an upstream client mistake, not an internal failure, and
 	// catching them here avoids an orphan blob on a doomed
@@ -223,7 +226,7 @@ func (h *MediaHandler) createMedia(ctx context.Context, in createMediaInput) (Me
 // createMedia into RFC 7807 responses. Keeping the mapping in one
 // place stops the domain method from importing httpx and makes the
 // HTTP contract trivial to audit.
-func (h *MediaHandler) writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
+func (h *Handler) writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrUnknownTags):
 		httpx.WriteError(w, r, fmt.Errorf("%w: %w", httpx.ErrUnprocessable, err))
@@ -245,7 +248,7 @@ type getMediaResponse struct {
 }
 
 // Get handles GET /media/{id}.
-func (h *MediaHandler) Get(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	rawID := r.PathValue("id")
@@ -279,7 +282,7 @@ func (h *MediaHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 // ServeFile handles GET /media/{id}/file by streaming the raw blob
 // to the client.
-func (h *MediaHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	rawID := r.PathValue("id")
@@ -329,7 +332,7 @@ func (h *MediaHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 // ParseMultipartForm to the right HTTP status. http.MaxBytesError is
 // 413; everything else (truncated stream, missing boundary…) is a
 // client mistake and surfaces as 400.
-func (h *MediaHandler) writeMultipartParseError(w http.ResponseWriter, r *http.Request, err error) {
+func (h *Handler) writeMultipartParseError(w http.ResponseWriter, r *http.Request, err error) {
 	var maxBytesErr *http.MaxBytesError
 	if errors.As(err, &maxBytesErr) {
 		httpx.WriteError(w, r, fmt.Errorf("%w: upload exceeds %d bytes", httpx.ErrPayloadTooLarge, h.maxUploadBytes))

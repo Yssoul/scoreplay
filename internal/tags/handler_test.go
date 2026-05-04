@@ -52,7 +52,7 @@ func newCreateRequest(t *testing.T, body string) *http.Request {
 
 func TestCreateTag_Created(t *testing.T) {
 	repo := &fakeTagRepository{}
-	h := NewTagHandler(repo)
+	h := NewHandler(repo)
 
 	rec := httptest.NewRecorder()
 	h.Create(rec, newCreateRequest(t, `{"name":"Messi"}`))
@@ -108,7 +108,7 @@ func TestCreateTag_BadRequest(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &fakeTagRepository{}
-			h := NewTagHandler(repo)
+			h := NewHandler(repo)
 
 			rec := httptest.NewRecorder()
 			h.Create(rec, newCreateRequest(t, tc.body))
@@ -130,7 +130,7 @@ func TestCreateTag_BadRequest(t *testing.T) {
 
 func TestCreateTag_Conflict(t *testing.T) {
 	repo := &fakeTagRepository{createErr: ErrNameConflict}
-	h := NewTagHandler(repo)
+	h := NewHandler(repo)
 
 	rec := httptest.NewRecorder()
 	h.Create(rec, newCreateRequest(t, `{"name":"Messi"}`))
@@ -154,7 +154,7 @@ func TestCreateTag_InternalError(t *testing.T) {
 	// message to the client.
 	boom := errors.New("unexpected boom: db unreachable")
 	repo := &fakeTagRepository{createErr: boom}
-	h := NewTagHandler(repo)
+	h := NewHandler(repo)
 
 	rec := httptest.NewRecorder()
 	h.Create(rec, newCreateRequest(t, `{"name":"Messi"}`))
@@ -179,10 +179,10 @@ func TestListTags_OK(t *testing.T) {
 		{ID: uuid.MustParse("019dea82-706a-7144-94f1-000000000002"), Name: "Ronaldo"},
 	}
 	repo := &fakeTagRepository{listResult: want}
-	h := NewTagHandler(repo)
+	h := NewHandler(repo)
 
 	rec := httptest.NewRecorder()
-	h.List(rec, httptest.NewRequest(http.MethodGet, "/tags", nil))
+	h.List(rec, httptest.NewRequest(http.MethodGet, "/tags", http.NoBody))
 
 	res := rec.Result()
 	defer res.Body.Close()
@@ -216,10 +216,10 @@ func TestListTags_EmptyReturnsEmptyArray(t *testing.T) {
 	// Repository returns nil; the handler must serialize "[]" and never
 	// "null", so clients can iterate without a null-guard.
 	repo := &fakeTagRepository{listResult: nil}
-	h := NewTagHandler(repo)
+	h := NewHandler(repo)
 
 	rec := httptest.NewRecorder()
-	h.List(rec, httptest.NewRequest(http.MethodGet, "/tags", nil))
+	h.List(rec, httptest.NewRequest(http.MethodGet, "/tags", http.NoBody))
 
 	res := rec.Result()
 	defer res.Body.Close()
@@ -235,10 +235,10 @@ func TestListTags_EmptyReturnsEmptyArray(t *testing.T) {
 func TestListTags_InternalError(t *testing.T) {
 	boom := errors.New("unexpected boom: db unreachable")
 	repo := &fakeTagRepository{listErr: boom}
-	h := NewTagHandler(repo)
+	h := NewHandler(repo)
 
 	rec := httptest.NewRecorder()
-	h.List(rec, httptest.NewRequest(http.MethodGet, "/tags", nil))
+	h.List(rec, httptest.NewRequest(http.MethodGet, "/tags", http.NoBody))
 
 	res := rec.Result()
 	defer res.Body.Close()

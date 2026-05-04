@@ -9,7 +9,7 @@ ifneq (,$(wildcard .env))
     export
 endif
 
-.PHONY: help db-up db-down migrate test test-integration run dev
+.PHONY: help db-up db-down migrate test test-integration lint run dev
 
 help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z0-9_.-]+:.*?## / {printf "  \033[1m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -28,6 +28,9 @@ test: ## Run the fast unit tests (no Docker).
 
 test-integration: ## Run unit + integration tests (requires Docker).
 	go test -tags integration ./...
+
+lint: ## Run golangci-lint (config: .golangci.yml; requires v2.x).
+	golangci-lint run
 
 run: ## Run the API against the local Postgres.
 	go run ./cmd/api

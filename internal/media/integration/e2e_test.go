@@ -63,7 +63,7 @@ func startMediaServer(t *testing.T, pool *pgxpool.Pool) (baseURL string, blobRoo
 	}
 
 	repo := media.NewPgRepository(pool)
-	h := media.NewMediaHandler(repo, store, testMaxUpload)
+	h := media.NewHandler(repo, store, testMaxUpload)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /media", h.Create)

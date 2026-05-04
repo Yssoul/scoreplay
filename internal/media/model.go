@@ -1,3 +1,6 @@
+// Package media implements the media bounded context: domain types,
+// repository, and HTTP handlers backing POST /media, GET /media/{id}
+// and GET /media/{id}/file.
 package media
 
 import "github.com/google/uuid"

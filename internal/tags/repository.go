@@ -23,6 +23,7 @@ func NewPgRepository(pool *pgxpool.Pool) *PgRepository {
 	return &PgRepository{queries: tagsdb.New(pool)}
 }
 
+// CreateTag inserts a tag, mapping a UNIQUE-violation on name to ErrNameConflict.
 func (r *PgRepository) CreateTag(ctx context.Context, tag Tag) error {
 	query := tagsdb.CreateTagParams{
 		ID:        tag.ID,
@@ -39,6 +40,7 @@ func (r *PgRepository) CreateTag(ctx context.Context, tag Tag) error {
 	return nil
 }
 
+// ListTags returns every tag, ordered by name ascending.
 func (r *PgRepository) ListTags(ctx context.Context) ([]Tag, error) {
 	rows, err := r.queries.ListTags(ctx)
 	if err != nil {

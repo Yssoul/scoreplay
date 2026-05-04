@@ -22,18 +22,24 @@ type tagRepository interface {
 	ListTags(ctx context.Context) ([]Tag, error)
 }
 
-type TagHandler struct {
+// Handler serves the HTTP endpoints rooted at /tags. The exported
+// type is intentionally Handler (not TagHandler): callers reference
+// it as tags.Handler, so the package qualifier already carries the
+// "tag" context.
+type Handler struct {
 	tagRepository tagRepository
 }
 
-func NewTagHandler(repo tagRepository) *TagHandler {
-	return &TagHandler{tagRepository: repo}
+// NewHandler wires the repository into a Handler.
+func NewHandler(repo tagRepository) *Handler {
+	return &Handler{tagRepository: repo}
 }
 
 // maxRequestBodyBytes caps the size of incoming JSON payloads.
 const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
-func (h *TagHandler) Create(w http.ResponseWriter, r *http.Request) {
+// Create handles POST /tags.
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 
 	dec := json.NewDecoder(r.Body)
@@ -76,7 +82,7 @@ func (h *TagHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // List returns all tags ordered by name ascending.
 // The response is always a JSON array (possibly empty), never null.
-func (h *TagHandler) List(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	res, err := h.tagRepository.ListTags(r.Context())
 	if err != nil {
 		httpx.WriteError(w, r, fmt.Errorf("%w: error listing tags: %w", httpx.ErrInternal, err))

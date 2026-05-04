@@ -90,10 +90,10 @@ type fakeBlobStore struct {
 	deleteErr error
 	deleted   []string
 
-	openBytes  []byte
-	openErr    error
-	openCalls  int
-	openKey    string
+	openBytes []byte
+	openErr   error
+	openCalls int
+	openKey   string
 }
 
 var _ blobStore = (*fakeBlobStore)(nil)
@@ -142,7 +142,7 @@ func (f *fakeBlobStore) Delete(_ context.Context, key string) error {
 // buildMultipart assembles a multipart/form-data body. The returned
 // content-type carries the boundary, which the handler needs to parse
 // the body. Pass fileBody=nil to omit the file part entirely.
-func buildMultipart(t *testing.T, fields map[string][]string, fileField string, fileName string, fileBody []byte) (body *bytes.Buffer, contentType string) {
+func buildMultipart(t *testing.T, fields map[string][]string, fileField, fileName string, fileBody []byte) (body *bytes.Buffer, contentType string) {
 	t.Helper()
 	body = &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
@@ -190,7 +190,7 @@ func TestCreateMedia_Created(t *testing.T) {
 
 	repo := &fakeMediaRepository{}
 	store := &fakeBlobStore{}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	body := append(append([]byte{}, jpegMagic...), []byte("rest of the bytes")...)
 	req := newCreateRequest(t, map[string][]string{
@@ -255,7 +255,7 @@ func TestCreateMedia_Created(t *testing.T) {
 func TestCreateMedia_NoTags_OK(t *testing.T) {
 	repo := &fakeMediaRepository{}
 	store := &fakeBlobStore{}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	req := newCreateRequest(t, map[string][]string{
 		"name": {"untagged"},
@@ -287,10 +287,10 @@ func TestCreateMedia_NoTags_OK(t *testing.T) {
 
 func TestCreateMedia_BadRequest(t *testing.T) {
 	cases := []struct {
-		name      string
-		fields    map[string][]string
-		fileBody  []byte
-		wantSubs  string
+		name     string
+		fields   map[string][]string
+		fileBody []byte
+		wantSubs string
 	}{
 		{
 			name:     "missing name",
@@ -340,7 +340,7 @@ func TestCreateMedia_BadRequest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &fakeMediaRepository{}
 			store := &fakeBlobStore{}
-			h := NewMediaHandler(repo, store, testMaxUpload)
+			h := NewHandler(repo, store, testMaxUpload)
 
 			req := newCreateRequest(t, tc.fields, tc.fileBody)
 			rec := httptest.NewRecorder()
@@ -367,7 +367,7 @@ func TestCreateMedia_BadRequest(t *testing.T) {
 func TestCreateMedia_UnsupportedMediaType(t *testing.T) {
 	repo := &fakeMediaRepository{}
 	store := &fakeBlobStore{}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	// Plain ASCII text → DetectContentType returns text/plain.
 	req := newCreateRequest(t, map[string][]string{"name": {"x"}}, []byte("just plain text, nothing to see here"))
@@ -394,7 +394,7 @@ func TestCreateMedia_PayloadTooLarge(t *testing.T) {
 	repo := &fakeMediaRepository{}
 	store := &fakeBlobStore{}
 	// Tiny cap so we can trip MaxBytesReader without huge buffers.
-	h := NewMediaHandler(repo, store, 64)
+	h := NewHandler(repo, store, 64)
 
 	body := append(append([]byte{}, jpegMagic...), bytes.Repeat([]byte("A"), 1024)...)
 	req := newCreateRequest(t, map[string][]string{"name": {"x"}}, body)
@@ -414,7 +414,7 @@ func TestCreateMedia_UnknownTags_422(t *testing.T) {
 	missing := uuid.MustParse("019f0000-0000-7000-8000-00000000beef")
 	repo := &fakeMediaRepository{missingResult: []uuid.UUID{missing}}
 	store := &fakeBlobStore{}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	req := newCreateRequest(t, map[string][]string{
 		"name": {"x"},
@@ -446,7 +446,7 @@ func TestCreateMedia_RepoError_TriggersBlobCompensation(t *testing.T) {
 	boom := errors.New("unexpected boom: tx commit failed")
 	repo := &fakeMediaRepository{createErr: boom}
 	store := &fakeBlobStore{}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	req := newCreateRequest(t, map[string][]string{"name": {"x"}}, jpegMagic)
 	rec := httptest.NewRecorder()
@@ -479,7 +479,7 @@ func TestCreateMedia_RepoError_TriggersBlobCompensation(t *testing.T) {
 func TestCreateMedia_RepoError_CompensationFailureIsSwallowed(t *testing.T) {
 	repo := &fakeMediaRepository{createErr: errors.New("db down")}
 	store := &fakeBlobStore{deleteErr: errors.New("disk on fire")}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	req := newCreateRequest(t, map[string][]string{"name": {"x"}}, jpegMagic)
 	rec := httptest.NewRecorder()
@@ -502,7 +502,7 @@ func TestCreateMedia_RepoError_CompensationFailureIsSwallowed(t *testing.T) {
 func TestCreateMedia_RepoError_CompensationIgnoresErrNotFound(t *testing.T) {
 	repo := &fakeMediaRepository{createErr: errors.New("db down")}
 	store := &fakeBlobStore{deleteErr: blobstore.ErrNotFound}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	req := newCreateRequest(t, map[string][]string{"name": {"x"}}, jpegMagic)
 	rec := httptest.NewRecorder()
@@ -519,7 +519,7 @@ func TestCreateMedia_RepoError_CompensationIgnoresErrNotFound(t *testing.T) {
 func TestCreateMedia_BlobStoreError_500NoRepoCall(t *testing.T) {
 	repo := &fakeMediaRepository{}
 	store := &fakeBlobStore{putErr: errors.New("disk full")}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	req := newCreateRequest(t, map[string][]string{"name": {"x"}}, jpegMagic)
 	rec := httptest.NewRecorder()
@@ -546,7 +546,7 @@ func TestCreateMedia_BlobStoreError_500NoRepoCall(t *testing.T) {
 // integration tests and through a real mux in cmd/api.
 func newGetRequest(t *testing.T, id string) *http.Request {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/media/"+id, nil)
+	req := httptest.NewRequest(http.MethodGet, "/media/"+id, http.NoBody)
 	req.SetPathValue("id", id)
 	return req
 }
@@ -560,7 +560,7 @@ func TestGetMedia_OK(t *testing.T) {
 		getMedia: Media{ID: mediaID, Name: "Messi goal", FileKey: mediaID.String(), ContentType: "image/jpeg"},
 		getTags:  []Tag{tagA, tagB},
 	}
-	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+	h := NewHandler(repo, &fakeBlobStore{}, testMaxUpload)
 
 	rec := httptest.NewRecorder()
 	h.Get(rec, newGetRequest(t, mediaID.String()))
@@ -609,7 +609,7 @@ func TestGetMedia_EmptyTagsReturnsEmptyArray(t *testing.T) {
 	repo := &fakeMediaRepository{
 		getMedia: Media{ID: mediaID, Name: "untagged", FileKey: mediaID.String(), ContentType: "image/jpeg"},
 	}
-	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+	h := NewHandler(repo, &fakeBlobStore{}, testMaxUpload)
 
 	rec := httptest.NewRecorder()
 	h.Get(rec, newGetRequest(t, mediaID.String()))
@@ -639,7 +639,7 @@ func TestGetMedia_EmptyTagsReturnsEmptyArray(t *testing.T) {
 
 func TestGetMedia_MalformedID_400(t *testing.T) {
 	repo := &fakeMediaRepository{}
-	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+	h := NewHandler(repo, &fakeBlobStore{}, testMaxUpload)
 
 	rec := httptest.NewRecorder()
 	h.Get(rec, newGetRequest(t, "not-a-uuid"))
@@ -659,7 +659,7 @@ func TestGetMedia_MalformedID_400(t *testing.T) {
 
 func TestGetMedia_NotFound_404(t *testing.T) {
 	repo := &fakeMediaRepository{getErr: ErrMediaNotFound}
-	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+	h := NewHandler(repo, &fakeBlobStore{}, testMaxUpload)
 
 	rec := httptest.NewRecorder()
 	h.Get(rec, newGetRequest(t, uuid.NewString()))
@@ -676,7 +676,7 @@ func TestGetMedia_NotFound_404(t *testing.T) {
 func TestGetMedia_InternalError(t *testing.T) {
 	boom := errors.New("unexpected boom: pgx unreachable")
 	repo := &fakeMediaRepository{getErr: boom}
-	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+	h := NewHandler(repo, &fakeBlobStore{}, testMaxUpload)
 
 	rec := httptest.NewRecorder()
 	h.Get(rec, newGetRequest(t, uuid.NewString()))
@@ -696,7 +696,7 @@ func TestGetMedia_InternalError(t *testing.T) {
 // the handler's logic.
 func newServeFileRequest(t *testing.T, id string) *http.Request {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/media/"+id+"/file", nil)
+	req := httptest.NewRequest(http.MethodGet, "/media/"+id+"/file", http.NoBody)
 	req.SetPathValue("id", id)
 	return req
 }
@@ -714,7 +714,7 @@ func TestServeFile_OK(t *testing.T) {
 		},
 	}
 	store := &fakeBlobStore{openBytes: body}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	rec := httptest.NewRecorder()
 	h.ServeFile(rec, newServeFileRequest(t, mediaID.String()))
@@ -750,7 +750,7 @@ func TestServeFile_OK(t *testing.T) {
 func TestServeFile_MalformedID_400(t *testing.T) {
 	repo := &fakeMediaRepository{}
 	store := &fakeBlobStore{}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	rec := httptest.NewRecorder()
 	h.ServeFile(rec, newServeFileRequest(t, "not-a-uuid"))
@@ -773,7 +773,7 @@ func TestServeFile_MalformedID_400(t *testing.T) {
 func TestServeFile_MediaNotFound_404(t *testing.T) {
 	repo := &fakeMediaRepository{getMetadataErr: ErrMediaNotFound}
 	store := &fakeBlobStore{}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	rec := httptest.NewRecorder()
 	h.ServeFile(rec, newServeFileRequest(t, uuid.NewString()))
@@ -801,7 +801,7 @@ func TestServeFile_BlobMissing_404(t *testing.T) {
 		getMetadataMedia: Media{ID: mediaID, FileKey: mediaID.String(), ContentType: "image/jpeg"},
 	}
 	store := &fakeBlobStore{openErr: blobstore.ErrNotFound}
-	h := NewMediaHandler(repo, store, testMaxUpload)
+	h := NewHandler(repo, store, testMaxUpload)
 
 	rec := httptest.NewRecorder()
 	h.ServeFile(rec, newServeFileRequest(t, mediaID.String()))

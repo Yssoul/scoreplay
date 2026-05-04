@@ -1,3 +1,6 @@
+// Command api is the ScorePlay HTTP service entrypoint: it wires the
+// configuration, Postgres pool, blob store, and HTTP routes, then
+// runs a graceful shutdown loop.
 package main
 
 import (
@@ -60,15 +63,21 @@ func run(logger *slog.Logger) error {
 
 // newHTTPServer assembles the HTTP server: routes, handlers, middleware and
 // timeouts.
+//
+// immutable by convention and copied exactly once at startup; trading
+// the 96-byte copy for a *config.Config pointer would invite mutation
+// and add a nil-pointer state to reason about.
+//
+//nolint:gocritic // hugeParam: cfg is passed by value on purpose. It is
 func newHTTPServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool, blobs *fsstore.Store) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
 
-	tagHandler := tags.NewTagHandler(tags.NewPgRepository(pool))
+	tagHandler := tags.NewHandler(tags.NewPgRepository(pool))
 	mux.HandleFunc("POST /tags", tagHandler.Create)
 	mux.HandleFunc("GET /tags", tagHandler.List)
 
-	mediaHandler := media.NewMediaHandler(media.NewPgRepository(pool), blobs, cfg.MaxUploadBytes)
+	mediaHandler := media.NewHandler(media.NewPgRepository(pool), blobs, cfg.MaxUploadBytes)
 	mux.HandleFunc("POST /media", mediaHandler.Create)
 	mux.HandleFunc("GET /media/{id}", mediaHandler.Get)
 	mux.HandleFunc("GET /media/{id}/file", mediaHandler.ServeFile)
