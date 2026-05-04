@@ -37,6 +37,17 @@ type fakeMediaRepository struct {
 	missingResult []uuid.UUID
 	missingErr    error
 	missingCalls  int
+
+	getMedia Media
+	getTags  []Tag
+	getErr   error
+	getCalls int
+	getID    uuid.UUID
+
+	getMetadataMedia Media
+	getMetadataErr   error
+	getMetadataCalls int
+	getMetadataID    uuid.UUID
 }
 
 var _ mediaRepository = (*fakeMediaRepository)(nil)
@@ -53,6 +64,18 @@ func (f *fakeMediaRepository) MissingTags(_ context.Context, ids []uuid.UUID) ([
 	return f.missingResult, f.missingErr
 }
 
+func (f *fakeMediaRepository) Get(_ context.Context, id uuid.UUID) (Media, []Tag, error) {
+	f.getCalls++
+	f.getID = id
+	return f.getMedia, f.getTags, f.getErr
+}
+
+func (f *fakeMediaRepository) GetMetadata(_ context.Context, id uuid.UUID) (Media, error) {
+	f.getMetadataCalls++
+	f.getMetadataID = id
+	return f.getMetadataMedia, f.getMetadataErr
+}
+
 // fakeBlobStore records Put/Delete activity so tests can assert
 // compensation actually happened. A mutex makes it safe under -race
 // even though the handler is sequential: better one cheap lock than
@@ -66,6 +89,11 @@ type fakeBlobStore struct {
 	putBytes  []byte
 	deleteErr error
 	deleted   []string
+
+	openBytes  []byte
+	openErr    error
+	openCalls  int
+	openKey    string
 }
 
 var _ blobStore = (*fakeBlobStore)(nil)
@@ -84,6 +112,24 @@ func (f *fakeBlobStore) Put(_ context.Context, key string, r io.Reader) error {
 	}
 	f.putBytes = b
 	return nil
+}
+
+// nopCloser wraps a *bytes.Reader so it satisfies io.ReadSeekCloser.
+// io.NopCloser does not work here because it returns io.ReadCloser
+// without Seek, which http.ServeContent needs for Range requests.
+type nopCloser struct{ *bytes.Reader }
+
+func (nopCloser) Close() error { return nil }
+
+func (f *fakeBlobStore) Open(_ context.Context, key string) (io.ReadSeekCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.openCalls++
+	f.openKey = key
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	return nopCloser{bytes.NewReader(f.openBytes)}, nil
 }
 
 func (f *fakeBlobStore) Delete(_ context.Context, key string) error {
@@ -491,6 +537,282 @@ func TestCreateMedia_BlobStoreError_500NoRepoCall(t *testing.T) {
 	if len(store.deleted) != 0 {
 		t.Errorf("store.Delete called after a Put failure: %v (nothing to compensate)", store.deleted)
 	}
+}
+
+// newGetRequest builds a GET /media/{id} request with the path
+// parameter pre-populated. We bypass the router on purpose: handler
+// unit tests should not depend on routing wiring, only on the
+// handler's own logic. The route is exercised end-to-end in
+// integration tests and through a real mux in cmd/api.
+func newGetRequest(t *testing.T, id string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/media/"+id, nil)
+	req.SetPathValue("id", id)
+	return req
+}
+
+func TestGetMedia_OK(t *testing.T) {
+	mediaID := uuid.MustParse("019f0000-0000-7000-8000-0000000000aa")
+	tagA := Tag{ID: uuid.MustParse("019f0000-0000-7000-8000-000000000001"), Name: "Messi"}
+	tagB := Tag{ID: uuid.MustParse("019f0000-0000-7000-8000-000000000002"), Name: "Real Madrid"}
+
+	repo := &fakeMediaRepository{
+		getMedia: Media{ID: mediaID, Name: "Messi goal", FileKey: mediaID.String(), ContentType: "image/jpeg"},
+		getTags:  []Tag{tagA, tagB},
+	}
+	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+
+	rec := httptest.NewRecorder()
+	h.Get(rec, newGetRequest(t, mediaID.String()))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (body=%q)", res.StatusCode, rec.Body.String())
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("content-type: got %q, want application/json*", ct)
+	}
+
+	var got getMediaResponse
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.ID != mediaID {
+		t.Errorf("response id: got %s, want %s", got.ID, mediaID)
+	}
+	if got.Name != "Messi goal" {
+		t.Errorf("response name: got %q, want %q", got.Name, "Messi goal")
+	}
+	if got.FileURL != "/media/"+mediaID.String()+"/file" {
+		t.Errorf("response fileUrl: got %q, want %q", got.FileURL, "/media/"+mediaID.String()+"/file")
+	}
+	if len(got.Tags) != 2 || got.Tags[0] != tagA || got.Tags[1] != tagB {
+		t.Errorf("response tags: got %+v, want [%+v %+v]", got.Tags, tagA, tagB)
+	}
+
+	if repo.getCalls != 1 {
+		t.Errorf("repo.Get calls: got %d, want 1", repo.getCalls)
+	}
+	if repo.getID != mediaID {
+		t.Errorf("repo received id %s, want %s", repo.getID, mediaID)
+	}
+}
+
+func TestGetMedia_EmptyTagsReturnsEmptyArray(t *testing.T) {
+	mediaID := uuid.MustParse("019f0000-0000-7000-8000-0000000000bb")
+
+	// repo.getTags is left nil on purpose: the handler must coerce
+	// nil to [] so the JSON contract stays "tags is always an
+	// array, never null".
+	repo := &fakeMediaRepository{
+		getMedia: Media{ID: mediaID, Name: "untagged", FileKey: mediaID.String(), ContentType: "image/jpeg"},
+	}
+	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+
+	rec := httptest.NewRecorder()
+	h.Get(rec, newGetRequest(t, mediaID.String()))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", res.StatusCode)
+	}
+
+	// Re-decode through a typed struct so a missing JSON field is
+	// caught as a regression. Then confirm the on-the-wire payload
+	// has [] (not null) by also inspecting the raw bytes.
+	var got getMediaResponse
+	body := rec.Body.Bytes()
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Tags == nil || len(got.Tags) != 0 {
+		t.Errorf("response tags: got %v, want []", got.Tags)
+	}
+	if !strings.Contains(string(body), `"tags":[]`) {
+		t.Errorf("raw body must serialise tags as [], got: %s", body)
+	}
+}
+
+func TestGetMedia_MalformedID_400(t *testing.T) {
+	repo := &fakeMediaRepository{}
+	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+
+	rec := httptest.NewRecorder()
+	h.Get(rec, newGetRequest(t, "not-a-uuid"))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400 (body=%q)", res.StatusCode, rec.Body.String())
+	}
+	assertProblemJSON(t, res, http.StatusBadRequest)
+
+	if repo.getCalls != 0 {
+		t.Errorf("repo.Get calls: got %d, want 0 (handler must reject before reaching repo)", repo.getCalls)
+	}
+}
+
+func TestGetMedia_NotFound_404(t *testing.T) {
+	repo := &fakeMediaRepository{getErr: ErrMediaNotFound}
+	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+
+	rec := httptest.NewRecorder()
+	h.Get(rec, newGetRequest(t, uuid.NewString()))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d, want 404 (body=%q)", res.StatusCode, rec.Body.String())
+	}
+	assertProblemJSON(t, res, http.StatusNotFound)
+}
+
+func TestGetMedia_InternalError(t *testing.T) {
+	boom := errors.New("unexpected boom: pgx unreachable")
+	repo := &fakeMediaRepository{getErr: boom}
+	h := NewMediaHandler(repo, &fakeBlobStore{}, testMaxUpload)
+
+	rec := httptest.NewRecorder()
+	h.Get(rec, newGetRequest(t, uuid.NewString()))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500", res.StatusCode)
+	}
+	assertProblemJSON(t, res, http.StatusInternalServerError)
+	assertNoErrorLeak(t, rec.Body.Bytes(), boom)
+}
+
+// newServeFileRequest mirrors newGetRequest: bypass the router and
+// inject the path value directly so the unit test exercises only
+// the handler's logic.
+func newServeFileRequest(t *testing.T, id string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/media/"+id+"/file", nil)
+	req.SetPathValue("id", id)
+	return req
+}
+
+func TestServeFile_OK(t *testing.T) {
+	mediaID := uuid.MustParse("019f0000-0000-7000-8000-0000000000cc")
+	body := append(append([]byte{}, jpegMagic...), bytes.Repeat([]byte("Y"), 256)...)
+
+	repo := &fakeMediaRepository{
+		getMetadataMedia: Media{
+			ID:          mediaID,
+			Name:        "Messi goal",
+			FileKey:     mediaID.String(),
+			ContentType: "image/jpeg",
+		},
+	}
+	store := &fakeBlobStore{openBytes: body}
+	h := NewMediaHandler(repo, store, testMaxUpload)
+
+	rec := httptest.NewRecorder()
+	h.ServeFile(rec, newServeFileRequest(t, mediaID.String()))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (body=%q)", res.StatusCode, rec.Body.String())
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("content-type: got %q, want image/jpeg (must come from DB, not be sniffed)", ct)
+	}
+	got, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Errorf("body bytes: got %d, want %d", len(got), len(body))
+	}
+
+	if repo.getMetadataCalls != 1 {
+		t.Errorf("repo.GetMetadata calls: got %d, want 1", repo.getMetadataCalls)
+	}
+	if repo.getCalls != 0 {
+		t.Errorf("repo.Get calls: got %d, want 0 (binary endpoint must use the lighter GetMetadata)", repo.getCalls)
+	}
+	if store.openKey != mediaID.String() {
+		t.Errorf("store.Open key: got %q, want %q", store.openKey, mediaID.String())
+	}
+}
+
+func TestServeFile_MalformedID_400(t *testing.T) {
+	repo := &fakeMediaRepository{}
+	store := &fakeBlobStore{}
+	h := NewMediaHandler(repo, store, testMaxUpload)
+
+	rec := httptest.NewRecorder()
+	h.ServeFile(rec, newServeFileRequest(t, "not-a-uuid"))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400 (body=%q)", res.StatusCode, rec.Body.String())
+	}
+	assertProblemJSON(t, res, http.StatusBadRequest)
+	if repo.getMetadataCalls != 0 {
+		t.Errorf("repo.GetMetadata called on malformed id: %d times", repo.getMetadataCalls)
+	}
+	if store.openCalls != 0 {
+		t.Errorf("store.Open called on malformed id: %d times", store.openCalls)
+	}
+}
+
+func TestServeFile_MediaNotFound_404(t *testing.T) {
+	repo := &fakeMediaRepository{getMetadataErr: ErrMediaNotFound}
+	store := &fakeBlobStore{}
+	h := NewMediaHandler(repo, store, testMaxUpload)
+
+	rec := httptest.NewRecorder()
+	h.ServeFile(rec, newServeFileRequest(t, uuid.NewString()))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d, want 404", res.StatusCode)
+	}
+	assertProblemJSON(t, res, http.StatusNotFound)
+	if store.openCalls != 0 {
+		t.Errorf("store.Open called when media row was missing: %d times", store.openCalls)
+	}
+}
+
+// TestServeFile_BlobMissing_404 covers the "row exists, blob does
+// not" corruption case. The blob store contract returns ErrNotFound
+// in that scenario; the handler turns it into a 404 (not a 500): the
+// client cannot do anything with this distinction, but the operator
+// gets a structured log line with the offending file_key.
+func TestServeFile_BlobMissing_404(t *testing.T) {
+	mediaID := uuid.MustParse("019f0000-0000-7000-8000-0000000000dd")
+	repo := &fakeMediaRepository{
+		getMetadataMedia: Media{ID: mediaID, FileKey: mediaID.String(), ContentType: "image/jpeg"},
+	}
+	store := &fakeBlobStore{openErr: blobstore.ErrNotFound}
+	h := NewMediaHandler(repo, store, testMaxUpload)
+
+	rec := httptest.NewRecorder()
+	h.ServeFile(rec, newServeFileRequest(t, mediaID.String()))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d, want 404 (body=%q)", res.StatusCode, rec.Body.String())
+	}
+	assertProblemJSON(t, res, http.StatusNotFound)
 }
 
 // assertProblemJSON mirrors the helper used in the tags package: each

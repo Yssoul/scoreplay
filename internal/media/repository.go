@@ -61,15 +61,29 @@ func (r *PgRepository) Create(ctx context.Context, m Media, tagIDs []uuid.UUID) 
 	return nil
 }
 
-// Get returns the media metadata together with the tags currently
-// attached to it.
-func (r *PgRepository) Get(ctx context.Context, id uuid.UUID) (Media, []Tag, error) {
+// GetMetadata returns just the media row, no tags.
+func (r *PgRepository) GetMetadata(ctx context.Context, id uuid.UUID) (Media, error) {
 	row, err := r.queries.GetMedia(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Media{}, nil, ErrMediaNotFound
+			return Media{}, ErrMediaNotFound
 		}
-		return Media{}, nil, fmt.Errorf("get media: %w", err)
+		return Media{}, fmt.Errorf("get media: %w", err)
+	}
+	return Media{
+		ID:          row.ID,
+		Name:        row.Name,
+		FileKey:     row.FileKey,
+		ContentType: row.ContentType,
+	}, nil
+}
+
+// Get returns the media metadata together with the tags currently
+// attached to it.
+func (r *PgRepository) Get(ctx context.Context, id uuid.UUID) (Media, []Tag, error) {
+	m, err := r.GetMetadata(ctx, id)
+	if err != nil {
+		return Media{}, nil, err
 	}
 
 	tagRows, err := r.queries.ListTagsByMediaID(ctx, id)
@@ -81,13 +95,7 @@ func (r *PgRepository) Get(ctx context.Context, id uuid.UUID) (Media, []Tag, err
 	for _, t := range tagRows {
 		tags = append(tags, Tag{ID: t.ID, Name: t.Name})
 	}
-
-	return Media{
-		ID:          row.ID,
-		Name:        row.Name,
-		FileKey:     row.FileKey,
-		ContentType: row.ContentType,
-	}, tags, nil
+	return m, tags, nil
 }
 
 // MissingTags returns the subset of ids that does not exist in the

@@ -106,7 +106,6 @@ rather than fail-closed with an arbitrary number.
   without leaking into the domain or the HTTP contract. This is a
   classic anti-corruption layer.
 
-//TODO: here
 ### 3.2 `name CITEXT` + `UNIQUE (name)` on `tags`
 
 - Prevents `"Messi"` and `"messi"` from coexisting, which is the
@@ -172,6 +171,29 @@ keys against `^[a-zA-Z0-9_-]{1,128}$` before touching the
 filesystem. This rules out path traversal (`../`), separators, and
 absurd lengths even if a future caller passes user input.
 
+#### 3.3.5 HTTP caching on `GET /media/{id}/file` — deferred
+
+`ServeFile` currently streams the blob via `http.ServeContent` with
+a zero `time.Time`, which disables `Last-Modified` /
+`If-Modified-Since` revalidation, and emits no `ETag` or
+`Cache-Control`. Every request therefore re-streams the full body.
+
+The blob stored under a given `file_key` is **immutable by
+construction** (the key is the media's UUIDv7, never reused), so
+the cache story is essentially free once we want it:
+
+- `Cache-Control: public, max-age=31536000, immutable` — the URL
+  identifies bytes that will never change.
+- `ETag: "<file_key>"` — strong validator, content-addressable.
+- `Last-Modified: <created_at>` — propagate the column already
+  stored in `media`; lets `http.ServeContent` answer
+  `304 Not Modified` automatically.
+
+Left out for now to keep the take-home scope tight, and because it
+only matters once a CDN or repeat clients are in front of the API
+(see §7.1, presigned S3 URLs, which would bypass this path
+entirely).
+
 ### 3.4 Media↔Tags is a join table, not an array column
 
 A media has many tags, a tag is carried by many media: this is a
@@ -198,7 +220,6 @@ is roughly as fast — but on **integrity, evolvability, and principle
 of least surprise**. The brief explicitly mentions a future need to
 search media by tag, which removes any remaining ambiguity.
 
-//TODO: review this
 The two foreign keys use different `ON DELETE` rules
 (`CASCADE` on `media_id`, `RESTRICT` on `tag_id`); the rationale is
 documented in §3.7.

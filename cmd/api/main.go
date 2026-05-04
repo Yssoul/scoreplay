@@ -70,6 +70,8 @@ func newHTTPServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool, b
 
 	mediaHandler := media.NewMediaHandler(media.NewPgRepository(pool), blobs, cfg.MaxUploadBytes)
 	mux.HandleFunc("POST /media", mediaHandler.Create)
+	mux.HandleFunc("GET /media/{id}", mediaHandler.Get)
+	mux.HandleFunc("GET /media/{id}/file", mediaHandler.ServeFile)
 
 	return &http.Server{
 		Addr:              cfg.HTTPAddr,

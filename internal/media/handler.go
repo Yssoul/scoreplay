@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -20,10 +21,13 @@ import (
 type mediaRepository interface {
 	Create(ctx context.Context, m Media, tagIDs []uuid.UUID) error
 	MissingTags(ctx context.Context, ids []uuid.UUID) ([]uuid.UUID, error)
+	Get(ctx context.Context, id uuid.UUID) (Media, []Tag, error)
+	GetMetadata(ctx context.Context, id uuid.UUID) (Media, error)
 }
 
 type blobStore interface {
 	Put(ctx context.Context, key string, r io.Reader) error
+	Open(ctx context.Context, key string) (io.ReadSeekCloser, error)
 	Delete(ctx context.Context, key string) error
 }
 
@@ -57,6 +61,11 @@ type createMediaResponse struct {
 	Name    string      `json:"name"`
 	Tags    []uuid.UUID `json:"tags"`
 	FileURL string      `json:"fileUrl"`
+}
+
+// mediaFileURL builds the public path that streams a media's blob.
+func mediaFileURL(id uuid.UUID) string {
+	return "/media/" + id.String() + "/file"
 }
 
 // createMediaInput carries the fully-parsed, fully-validated inputs
@@ -145,7 +154,7 @@ func (h *MediaHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ID:      m.ID,
 		Name:    m.Name,
 		Tags:    tagIDs,
-		FileURL: "/media/" + m.ID.String() + "/file",
+		FileURL: mediaFileURL(m.ID),
 	}
 	if resp.Tags == nil {
 		resp.Tags = []uuid.UUID{}
@@ -221,6 +230,99 @@ func (h *MediaHandler) writeCreateError(w http.ResponseWriter, r *http.Request, 
 	default:
 		httpx.WriteError(w, r, fmt.Errorf("%w: %w", httpx.ErrInternal, err))
 	}
+}
+
+// getMediaResponse is the DTO returned by GET /media/{id}. Tags are
+// enriched with their name on this endpoint (asymmetry with POST,
+// which only echoes the submitted ids — see DESIGN.md §3.5): a read
+// client typically wants to render the media without a second round
+// trip to GET /tags.
+type getMediaResponse struct {
+	ID      uuid.UUID `json:"id"`
+	Name    string    `json:"name"`
+	Tags    []Tag     `json:"tags"`
+	FileURL string    `json:"fileUrl"`
+}
+
+// Get handles GET /media/{id}.
+func (h *MediaHandler) Get(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	rawID := r.PathValue("id")
+	id, err := uuid.Parse(rawID)
+	if err != nil {
+		httpx.WriteError(w, r, fmt.Errorf("%w: %q is not a valid uuid: %w", httpx.ErrBadRequest, rawID, err))
+		return
+	}
+
+	m, tags, err := h.repo.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrMediaNotFound) {
+			httpx.WriteError(w, r, fmt.Errorf("%w: %w", httpx.ErrNotFound, err))
+			return
+		}
+		httpx.WriteError(w, r, fmt.Errorf("%w: get media: %w", httpx.ErrInternal, err))
+		return
+	}
+
+	if tags == nil {
+		tags = []Tag{}
+	}
+
+	_ = httpx.WriteJSON(w, http.StatusOK, getMediaResponse{
+		ID:      m.ID,
+		Name:    m.Name,
+		Tags:    tags,
+		FileURL: mediaFileURL(m.ID),
+	})
+}
+
+// ServeFile handles GET /media/{id}/file by streaming the raw blob
+// to the client.
+func (h *MediaHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	rawID := r.PathValue("id")
+	id, err := uuid.Parse(rawID)
+	if err != nil {
+		httpx.WriteError(w, r, fmt.Errorf("%w: %q is not a valid uuid: %w", httpx.ErrBadRequest, rawID, err))
+		return
+	}
+
+	m, err := h.repo.GetMetadata(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrMediaNotFound) {
+			httpx.WriteError(w, r, fmt.Errorf("%w: %w", httpx.ErrNotFound, err))
+			return
+		}
+		httpx.WriteError(w, r, fmt.Errorf("%w: get metadata: %w", httpx.ErrInternal, err))
+		return
+	}
+
+	rc, err := h.store.Open(ctx, m.FileKey)
+	if err != nil {
+		if errors.Is(err, blobstore.ErrNotFound) {
+			httpx.LoggerFrom(ctx).ErrorContext(ctx, "missing blob for existing media row",
+				slog.String("media_id", m.ID.String()),
+				slog.String("file_key", m.FileKey),
+			)
+			httpx.WriteError(w, r, fmt.Errorf("%w: blob missing", httpx.ErrNotFound))
+			return
+		}
+		httpx.WriteError(w, r, fmt.Errorf("%w: open blob: %w", httpx.ErrInternal, err))
+		return
+	}
+	defer func() { _ = rc.Close() }()
+
+	// Set Content-Type explicitly (from DB) so http.ServeContent does
+	// not try to sniff again from the bytes we are about to serve.
+	w.Header().Set("Content-Type", m.ContentType)
+
+	// The "name" passed to ServeContent is only used for sniffing if
+	// Content-Type is empty — we set it above, so this argument has
+	// no observable effect. Pass the file_key so any future log
+	// sampler at least sees a meaningful identifier.
+	http.ServeContent(w, r, m.FileKey, time.Time{}, rc)
 }
 
 // writeMultipartParseError maps the various failure modes of
