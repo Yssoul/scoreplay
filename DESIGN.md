@@ -17,9 +17,12 @@ as `bytea`, or metadata in object-storage tags) optimises for neither.
 **Metadata → PostgreSQL.** Media and tags are small, structured,
 strongly related records with hard integrity needs:
 
-- We need uniqueness guarantees (case-insensitive tag names via
-  `CITEXT`) and foreign-key integrity (no orphan associations) that
-  only a relational schema enforces declaratively.
+- We want uniqueness (case-insensitive tag names via `CITEXT`) and
+  referential integrity (no orphan associations) enforced
+  declaratively rather than re-implemented in application code. Other
+  stores can express similar invariants (Mongo schema validation,
+  Dynamo conditional writes, app-level checks), but a relational
+  schema is the lowest-effort way to get them at this scale.
 - We need atomic "create media + N associations" — a single
   transaction, no eventually-consistent reconciliation.
 - The access pattern is a flat M:N relation queried in both
@@ -30,15 +33,16 @@ strongly related records with hard integrity needs:
 - The brief flags future search-by-tag; Postgres handles it in-DB
   with `pg_trgm` (fuzzy/autocomplete) and `tsvector` GIN (FTS), no
   second stateful system. If volume ever outgrows that, stream into
-  Elasticsearch via CDC as a read projection — Postgres stays the
+  Elasticsearch — Postgres stays the
   system of record.
 - Rejected alternatives:
-  - **Document DBs (MongoDB, DynamoDB)** fit when a document is
-    self-contained and read together. Tags are the opposite — a
-    shared, mutable vocabulary queried in both directions.
-    Embedding them duplicates data and breaks on rename;
-    referencing them gives us a relational model without the
-    foreign keys.
+  - **Document DBs (MongoDB, DynamoDB)** would work — bidirectional
+    access is solvable with a multikey index or a GSI, and embedding
+    tag IDs (not full objects) avoids the rename problem. The reason
+    to pass is integrity, not capability: at our scale and team size
+    we'd rather get FKs, unique constraints and multi-row
+    transactions declaratively than re-implement them in application
+    code. Their horizontal-scale payoff is also irrelevant here.
   - **Redis / KV**: no integrity, no ad-hoc queries — cache, not
     source of truth.
   - **Elasticsearch as primary**: not a system of record, no real
@@ -99,11 +103,14 @@ bytes.
 
 ## 2. Architectural decisions
 
-### Two bounded contexts side by side
-`internal/tags/` and `internal/media/` each own their handler,
-repository, model and migrations. They communicate only through
-stable IDs — `media` does not import `tags`. Adding a third domain
-later looks identical to an existing one.
+### Two packages side by side
+`internal/tags/` and `internal/media/` are split for code
+organization. They share a schema and `media` reads the `tags`
+table directly via its own queries. The package
+split keeps each domain's HTTP handlers, repository and migrations
+close together, which makes navigation and review easier; it does
+not pretend to enforce a service boundary that would only be real
+with a network or interface seam between them.
 
 ### Domain types decoupled from sqlc-generated types
 Repositories map `db.Tag → tags.Tag` row by row. The mapping cost is
@@ -231,6 +238,18 @@ without reshaping what is here.
 - **Body size capped per endpoint** via `http.MaxBytesReader`. JSON
   endpoints cap at 1 MiB; `POST /media` uses
   `MEDIA_MAX_UPLOAD_BYTES` (default 100 MiB).
+- **Connection-level `ReadTimeout`/`WriteTimeout` are zero by default.**
+  They are global per-connection deadlines, which conflict with the
+  100 MiB upload cap and the streaming `GET /media/{id}/file`: a slow
+  but legitimate client would be reset mid-transfer at any value low
+  enough to defend against attack, and any value high enough to cover
+  realistic mobile uploads is no defense at all. Defenses are layered
+  elsewhere: `ReadHeaderTimeout=5s` blocks slow-loris on the request
+  line, `IdleTimeout=60s` evicts idle keep-alive connections,
+  `http.MaxBytesReader` bounds body size per route, and request
+  cancellation propagates via `context` to the DB and blob store.
+  Operators who need wall-clock budgets per route can wrap the JSON
+  mux with `http.TimeoutHandler`; the seam is in `newHTTPServer`.
 - **Content-type sniffed on upload** (first 512 bytes), stored in
   `media.content_type`, served back without re-sniffing. Anything
   that is not `image/*` or `video/*` is rejected with 415.
@@ -240,7 +259,13 @@ without reshaping what is here.
   `../`, separators, absurd lengths).
 - **`POST /media` orchestration**: validate tags → write blob →
   transactional insert of media + `media_tags` → on DB failure, the
-  blob is best-effort deleted to compensate. Not idempotent; see §3.
+  blob is best-effort deleted to compensate. The compensation runs on
+  a context detached from the request (`context.WithoutCancel` plus a
+  short timeout) so a client disconnect mid-rollback cannot abort the
+  cleanup and turn a recoverable failure into an orphan blob. The
+  current `fsstore` ignores `ctx`, but the contract assumes any
+  backend (S3 next) will honor it — pinned by a dedicated test. Not
+  idempotent; see §3.
 - **Configuration is fail-fast**: missing required env vars are
   reported all at once at startup, then the process exits.
 - **`.env` is loaded by the Makefile only**; the binary itself does

@@ -34,7 +34,6 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 
-	//TODO: review this
 	// Order matters: DeadlineExceeded must be checked before Canceled
 	// because a deadline firing also cancels the context tree, so
 	// errors.Is(err, context.Canceled) can be true for what is really a

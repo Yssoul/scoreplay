@@ -1,10 +1,5 @@
 // Package fsstore is a blobstore.Store backed by the local filesystem.
 //
-// It is meant for development and single-node deployments. Production
-// deployments should use an S3-compatible backend (see DESIGN.md): the
-// blobstore.Store interface lets handlers swap implementations without
-// too many changes.
-//
 // Layout under the configured root:
 //
 //	<root>/
@@ -34,11 +29,8 @@ const (
 	filePerm = 0o644
 )
 
-// keyPattern restricts keys to characters we are willing to translate
-// 1:1 into a path segment. UUIDs (with or without dashes) match this
-// pattern; arbitrary user input does not. This is a defense-in-depth
-// measure against path traversal even though callers are trusted to
-// pass UUIDv7 strings.
+// keyPattern: defense-in-depth against path traversal. UUIDv7 (the
+// only thing callers actually pass) trivially matches.
 var keyPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 // Store persists blobs as files under root.
@@ -153,9 +145,7 @@ func (s *Store) pathFor(key string) string {
 	return filepath.Join(s.root, blobsDir, key)
 }
 
-// validateKey rejects keys that could escape the blobs directory or
-// confuse the filesystem (path separators, traversal, empty input).
-// Callers pass UUIDv7 strings, which always satisfy keyPattern.
+// validateKey enforces keyPattern.
 func validateKey(key string) error {
 	if !keyPattern.MatchString(key) {
 		return fmt.Errorf("fsstore: invalid key %q", key)

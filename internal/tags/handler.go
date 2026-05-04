@@ -22,10 +22,7 @@ type tagRepository interface {
 	ListTags(ctx context.Context) ([]Tag, error)
 }
 
-// Handler serves the HTTP endpoints rooted at /tags. The exported
-// type is intentionally Handler (not TagHandler): callers reference
-// it as tags.Handler, so the package qualifier already carries the
-// "tag" context.
+// Handler serves the HTTP endpoints rooted at /tags.
 type Handler struct {
 	tagRepository tagRepository
 }
@@ -47,6 +44,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	var req createTagRequest
 	if err := dec.Decode(&req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpx.WriteError(w, r, fmt.Errorf("%w: body exceeds %d bytes", httpx.ErrPayloadTooLarge, maxRequestBodyBytes))
+			return
+		}
 		httpx.WriteError(w, r, fmt.Errorf("%w: invalid json body: %w", httpx.ErrBadRequest, err))
 		return
 	}
@@ -92,7 +94,6 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		res = []Tag{}
 	}
 
-	//TODO: Review if we want to log the error if WriteJSON fails.
 	_ = httpx.WriteJSON(w, http.StatusOK, res)
 }
 

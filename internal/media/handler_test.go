@@ -89,6 +89,12 @@ type fakeBlobStore struct {
 	putBytes  []byte
 	deleteErr error
 	deleted   []string
+	// deleteCtxErr / deleteCtxHasDeadline snapshot the cleanup ctx at
+	// call time. Capturing the *Context itself would race with the
+	// caller's defer cancel() once createMedia returns, so we read
+	// the bits we care about while we are still inside Delete.
+	deleteCtxErr         error
+	deleteCtxHasDeadline bool
 
 	openBytes []byte
 	openErr   error
@@ -132,10 +138,12 @@ func (f *fakeBlobStore) Open(_ context.Context, key string) (io.ReadSeekCloser, 
 	return nopCloser{bytes.NewReader(f.openBytes)}, nil
 }
 
-func (f *fakeBlobStore) Delete(_ context.Context, key string) error {
+func (f *fakeBlobStore) Delete(ctx context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleted = append(f.deleted, key)
+	f.deleteCtxErr = ctx.Err()
+	_, f.deleteCtxHasDeadline = ctx.Deadline()
 	return f.deleteErr
 }
 
@@ -513,6 +521,37 @@ func TestCreateMedia_RepoError_CompensationIgnoresErrNotFound(t *testing.T) {
 
 	if res.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status: got %d, want 500", res.StatusCode)
+	}
+}
+
+// TestCreateMedia_RepoError_CompensationCtxDetachedFromRequest pins
+// the contract that the cleanup Delete runs on a context detached
+// from the request: a client disconnect mid-rollback must not abort
+// the compensation and turn a recoverable failure into an orphan
+// blob. Today fsstore ignores ctx, but DESIGN.md §1 promises the path
+// to S3 is "a new package implementing the same interface" — and an
+// S3 implementation will honor ctx. Without this guarantee, every
+// client disconnect on a failing POST /media would leak a blob.
+func TestCreateMedia_RepoError_CompensationCtxDetachedFromRequest(t *testing.T) {
+	repo := &fakeMediaRepository{createErr: errors.New("db down")}
+	store := &fakeBlobStore{}
+	h := NewHandler(repo, store, testMaxUpload)
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel: simulates a client that disconnected.
+
+	req := newCreateRequest(t, map[string][]string{"name": {"x"}}, jpegMagic).WithContext(cancelledCtx)
+	rec := httptest.NewRecorder()
+	h.Create(rec, req)
+
+	if len(store.deleted) != 1 {
+		t.Fatalf("store.Delete calls: got %d, want 1 (compensation must run even on cancelled request)", len(store.deleted))
+	}
+	if store.deleteCtxErr != nil {
+		t.Errorf("compensation ctx was cancelled at call time (%v); it must be detached from the request ctx", store.deleteCtxErr)
+	}
+	if !store.deleteCtxHasDeadline {
+		t.Error("compensation ctx has no deadline; it must be time-bounded")
 	}
 }
 

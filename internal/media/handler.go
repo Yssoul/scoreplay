@@ -31,16 +31,12 @@ type blobStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// Handler serves the HTTP endpoints rooted at /media. It is named
-// Handler (not MediaHandler) on purpose: callers reference it as
-// media.Handler, so the package qualifier already carries the
-// "media" context. See https://github.com/golang/go/wiki/CodeReviewComments#package-names.
+// Handler serves the HTTP endpoints rooted at /media.
 type Handler struct {
 	repo  mediaRepository
 	store blobStore
 
-	// maxUploadBytes caps the size of the multipart body. Any byte
-	// past the limit is rejected with 413 by http.MaxBytesReader.
+	// maxUploadBytes caps the size of the multipart body.
 	maxUploadBytes int64
 }
 
@@ -49,15 +45,17 @@ func NewHandler(repo mediaRepository, store blobStore, maxUploadBytes int64) *Ha
 	return &Handler{repo: repo, store: store, maxUploadBytes: maxUploadBytes}
 }
 
-// multipartMaxMemory is how much of the multipart body Go is allowed
-// to keep in RAM before spilling to a temp file on disk. Generous
-// enough for the small text fields, small enough that a burst of
-// concurrent uploads cannot exhaust memory.
+// multipartMaxMemory bounds in-RAM buffering of multipart parts
+// before they spill to a temp file.
 const multipartMaxMemory = 10 << 20 // 10 MiB
 
 // sniffSize is the number of leading bytes inspected by
 // http.DetectContentType. The constant comes from the stdlib contract.
 const sniffSize = 512
+
+// blobCompensationTimeout caps the cleanup Delete that compensates a
+// failed media insert.
+const blobCompensationTimeout = 5 * time.Second
 
 type createMediaResponse struct {
 	ID      uuid.UUID   `json:"id"`
@@ -66,7 +64,6 @@ type createMediaResponse struct {
 	FileURL string      `json:"fileUrl"`
 }
 
-// mediaFileURL builds the public path that streams a media's blob.
 func mediaFileURL(id uuid.UUID) string {
 	return "/media/" + id.String() + "/file"
 }
@@ -165,15 +162,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	_ = httpx.WriteJSON(w, http.StatusCreated, resp)
 }
 
-// createMedia is the domain orchestration of POST /media: validate
-// foreign keys, generate the id, stream the blob, persist the row,
-// compensate on failure. It is transport-agnostic on purpose so the
-// HTTP wrapper above stays focused on parsing and status mapping.
+// createMedia is the transport-agnostic core of POST /media.
 func (h *Handler) createMedia(ctx context.Context, in createMediaInput) (Media, error) {
-	// Pre-validate the tag set before writing the blob. Unknown tags
-	// are an upstream client mistake, not an internal failure, and
-	// catching them here avoids an orphan blob on a doomed
-	// transaction.
 	if len(in.TagIDs) > 0 {
 		missing, err := h.repo.MissingTags(ctx, in.TagIDs)
 		if err != nil {
@@ -188,9 +178,7 @@ func (h *Handler) createMedia(ctx context.Context, in createMediaInput) (Media, 
 	if err != nil {
 		return Media{}, fmt.Errorf("generate media id: %w", err)
 	}
-	// file_key = media.id keeps a single source of truth for
-	// addressing the asset and makes "find this media's blob"
-	// trivial in ops.
+	// file_key = media.id: a single identifier addresses both rows.
 	fileKey := id.String()
 
 	if err := h.store.Put(ctx, fileKey, in.Body); err != nil {
@@ -204,12 +192,11 @@ func (h *Handler) createMedia(ctx context.Context, in createMediaInput) (Media, 
 		ContentType: in.ContentType,
 	}
 	if err := h.repo.Create(ctx, m, in.TagIDs); err != nil {
-		// Compensation: best-effort cleanup of the blob we just
-		// wrote. We log but do not surface the cleanup failure: the
-		// user-facing error is the original DB failure. A periodic
-		// reconciliation job (DESIGN.md §7) catches what slips
-		// through here.
-		if delErr := h.store.Delete(ctx, fileKey); delErr != nil && !errors.Is(delErr, blobstore.ErrNotFound) {
+		// Detached, time-bounded ctx: a client disconnect must not
+		// abort the cleanup and orphan the blob.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), blobCompensationTimeout)
+		defer cancel()
+		if delErr := h.store.Delete(cleanupCtx, fileKey); delErr != nil && !errors.Is(delErr, blobstore.ErrNotFound) {
 			httpx.LoggerFrom(ctx).ErrorContext(ctx, "orphan blob: failed to compensate after db error",
 				slog.String("file_key", fileKey),
 				slog.Any("delete_err", delErr),
@@ -222,10 +209,8 @@ func (h *Handler) createMedia(ctx context.Context, in createMediaInput) (Media, 
 	return m, nil
 }
 
-// writeCreateError translates the domain-level errors returned by
-// createMedia into RFC 7807 responses. Keeping the mapping in one
-// place stops the domain method from importing httpx and makes the
-// HTTP contract trivial to audit.
+// writeCreateError maps domain errors from createMedia onto HTTP
+// statuses, keeping httpx out of the domain method.
 func (h *Handler) writeCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrUnknownTags):
@@ -235,11 +220,7 @@ func (h *Handler) writeCreateError(w http.ResponseWriter, r *http.Request, err e
 	}
 }
 
-// getMediaResponse is the DTO returned by GET /media/{id}. Tags are
-// enriched with their name on this endpoint (asymmetry with POST,
-// which only echoes the submitted ids — see DESIGN.md §3.5): a read
-// client typically wants to render the media without a second round
-// trip to GET /tags.
+// getMediaResponse is the DTO returned by GET /media/{id}.
 type getMediaResponse struct {
 	ID      uuid.UUID `json:"id"`
 	Name    string    `json:"name"`
@@ -328,10 +309,8 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, m.FileKey, time.Time{}, rc)
 }
 
-// writeMultipartParseError maps the various failure modes of
-// ParseMultipartForm to the right HTTP status. http.MaxBytesError is
-// 413; everything else (truncated stream, missing boundary…) is a
-// client mistake and surfaces as 400.
+// writeMultipartParseError maps ParseMultipartForm errors to 413
+// (size) or 400 (everything else).
 func (h *Handler) writeMultipartParseError(w http.ResponseWriter, r *http.Request, err error) {
 	var maxBytesErr *http.MaxBytesError
 	if errors.As(err, &maxBytesErr) {
@@ -342,12 +321,8 @@ func (h *Handler) writeMultipartParseError(w http.ResponseWriter, r *http.Reques
 }
 
 // parseTagIDs converts the raw multipart values into UUIDs. Empty or
-// nil input is valid: the brief allows a media with zero tags. A
-// single malformed value rejects the whole request (fail-fast).
-// Duplicates are rejected up-front: letting them through would either
-// violate the (media_id, tag_id) primary key on insert (surfacing as
-// a 500) or rely on silent dedup downstream — both worse than a
-// crisp 400.
+// nil input is valid (zero-tag media allowed). Malformed values and
+// duplicates are rejected with a 400.
 func parseTagIDs(raw []string) ([]uuid.UUID, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -372,10 +347,7 @@ func parseTagIDs(raw []string) ([]uuid.UUID, error) {
 	return out, nil
 }
 
-// isAllowedMediaType keeps the policy in one place. A permissive
-// image/* + video/* whitelist filters the obviously wrong (PDF,
-// executables, application/octet-stream) without rejecting legitimate
-// formats we have not anticipated (HEIC, AVIF, …).
+// isAllowedMediaType is a permissive image/* + video/* whitelist.
 func isAllowedMediaType(ct string) bool {
 	// Strip parameters (e.g. "; charset=utf-8") that DetectContentType
 	// can append on text formats. We only care about the type/subtype.

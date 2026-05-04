@@ -90,9 +90,6 @@ func TestCreateTag_Created(t *testing.T) {
 }
 
 func TestCreateTag_BadRequest(t *testing.T) {
-	// Body larger than the 1 MiB cap the handler enforces via http.MaxBytesReader.
-	oversizedBody := `{"name":"` + strings.Repeat("a", maxRequestBodyBytes+1) + `"}`
-
 	cases := []struct {
 		name string
 		body string
@@ -102,7 +99,6 @@ func TestCreateTag_BadRequest(t *testing.T) {
 		{name: "whitespace-only name", body: `{"name":"   "}`},
 		{name: "unknown field", body: `{"name":"Messi","extra":"x"}`},
 		{name: "malformed json", body: `{"name":`},
-		{name: "body over size cap", body: oversizedBody},
 	}
 
 	for _, tc := range cases {
@@ -125,6 +121,31 @@ func TestCreateTag_BadRequest(t *testing.T) {
 				t.Errorf("repo calls: got %d, want 0 (handler must not reach repo on validation failure)", repo.calls)
 			}
 		})
+	}
+}
+
+// TestCreateTag_PayloadTooLarge asserts that bodies exceeding the
+// MaxBytesReader cap surface as 413, not 400 — mirroring the media
+// handler's treatment of *http.MaxBytesError.
+func TestCreateTag_PayloadTooLarge(t *testing.T) {
+	oversizedBody := `{"name":"` + strings.Repeat("a", maxRequestBodyBytes+1) + `"}`
+
+	repo := &fakeTagRepository{}
+	h := NewHandler(repo)
+
+	rec := httptest.NewRecorder()
+	h.Create(rec, newCreateRequest(t, oversizedBody))
+
+	res := rec.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status: got %d, want %d (body=%q)", res.StatusCode, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+	assertProblemJSON(t, res, http.StatusRequestEntityTooLarge)
+
+	if repo.calls != 0 {
+		t.Errorf("repo calls: got %d, want 0 (handler must not reach repo when body is rejected)", repo.calls)
 	}
 }
 

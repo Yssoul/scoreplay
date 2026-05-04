@@ -24,9 +24,7 @@ func NewPgRepository(pool *pgxpool.Pool) *PgRepository {
 	return &PgRepository{pool: pool, queries: mediadb.New(pool)}
 }
 
-// Create inserts a media row and attaches the requested tags in a
-// single transaction, so a partial state can never be observed by
-// concurrent readers.
+// Create inserts a media row and attaches its tags in a single transaction.
 func (r *PgRepository) Create(ctx context.Context, m Media, tagIDs []uuid.UUID) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -46,12 +44,12 @@ func (r *PgRepository) Create(ctx context.Context, m Media, tagIDs []uuid.UUID) 
 		return fmt.Errorf("create media: insert: %w", err)
 	}
 
-	for _, tagID := range tagIDs {
-		if err := q.AttachTag(ctx, mediadb.AttachTagParams{
+	if len(tagIDs) > 0 {
+		if err := q.AttachTags(ctx, mediadb.AttachTagsParams{
 			MediaID: m.ID,
-			TagID:   tagID,
+			TagIds:  tagIDs,
 		}); err != nil {
-			return fmt.Errorf("create media: attach tag %s: %w", tagID, err)
+			return fmt.Errorf("create media: attach tags: %w", err)
 		}
 	}
 

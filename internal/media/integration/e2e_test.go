@@ -17,8 +17,7 @@
 //     dependency, a missing route registration) that every unit
 //     test would still pass.
 //   - FKConsistency_TagDeleteRestricted: enforces a *database*
-//     contract (ON DELETE RESTRICT, DESIGN.md §3.7) that no fake
-//     can reproduce.
+//     contract (ON DELETE RESTRICT) that no fake can reproduce.
 package mediaintegration
 
 import (
@@ -232,10 +231,9 @@ func TestPOSTMedia_HappyPath_PersistsRowAttachmentsAndBlob(t *testing.T) {
 }
 
 // TestPOSTMedia_FKConsistency_TagDeleteRestricted closes the loop on
-// the ON DELETE RESTRICT choice for media_tags.tag_id (DESIGN.md
-// §3.7): once a tag is attached to a media, the database refuses to
-// drop it. This is a safety net against well-meaning operators
-// running DELETE in psql.
+// the ON DELETE RESTRICT choice for media_tags.tag_id: once a tag is
+// attached to a media, the database refuses to drop it. This is a
+// safety net against well-meaning operators running DELETE in psql.
 func TestPOSTMedia_FKConsistency_TagDeleteRestricted(t *testing.T) {
 	pool := newTestPool(t)
 	baseURL, _ := startMediaServer(t, pool)

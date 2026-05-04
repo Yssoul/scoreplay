@@ -48,9 +48,13 @@ func Load() (Config, error) {
 
 	readHeaderTimeout, err := getDuration("HTTP_READ_HEADER_TIMEOUT", 5*time.Second)
 	collect(err)
-	readTimeout, err := getDuration("HTTP_READ_TIMEOUT", 15*time.Second)
+	// ReadTimeout/WriteTimeout default to 0: per-connection deadlines
+	// would truncate legitimate slow uploads/downloads. Defenses are
+	// layered elsewhere (ReadHeaderTimeout, IdleTimeout, MaxBytesReader,
+	// ctx).
+	readTimeout, err := getDuration("HTTP_READ_TIMEOUT", 0)
 	collect(err)
-	writeTimeout, err := getDuration("HTTP_WRITE_TIMEOUT", 15*time.Second)
+	writeTimeout, err := getDuration("HTTP_WRITE_TIMEOUT", 0)
 	collect(err)
 	idleTimeout, err := getDuration("HTTP_IDLE_TIMEOUT", 60*time.Second)
 	collect(err)

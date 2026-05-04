@@ -61,14 +61,9 @@ func run(logger *slog.Logger) error {
 	return serve(ctx, logger, srv, cfg.ShutdownTimeout)
 }
 
-// newHTTPServer assembles the HTTP server: routes, handlers, middleware and
-// timeouts.
+// newHTTPServer assembles routes, middleware and HTTP timeouts.
 //
-// immutable by convention and copied exactly once at startup; trading
-// the 96-byte copy for a *config.Config pointer would invite mutation
-// and add a nil-pointer state to reason about.
-//
-//nolint:gocritic // hugeParam: cfg is passed by value on purpose. It is
+//nolint:gocritic // hugeParam: cfg is passed by value to keep it immutable across the lifetime of the server.
 func newHTTPServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool, blobs *fsstore.Store) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)

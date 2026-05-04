@@ -59,8 +59,8 @@ into every recipe automatically.
 |---------------------------|--------------------|------------------------------------------|
 | `PGHOST` / `PGPORT` / …   | see `.env.example` | Postgres connection. Combined into a DSN.|
 | `HTTP_ADDR`               | `:8080`            | Listen address.                          |
-| `HTTP_READ_TIMEOUT`       | `15s`              | Server read timeout.                     |
-| `HTTP_WRITE_TIMEOUT`      | `15s`              | Server write timeout.                    |
+| `HTTP_READ_TIMEOUT`       | `0` (disabled)     | Per-connection read deadline. Off by default to allow slow uploads up to `MEDIA_MAX_UPLOAD_BYTES`; see `DESIGN.md §4`. |
+| `HTTP_WRITE_TIMEOUT`      | `0` (disabled)     | Per-connection write deadline. Off by default to allow streaming downloads of large media. |
 | `HTTP_SHUTDOWN_TIMEOUT`   | `10s`              | Graceful shutdown grace period.          |
 | `MEDIA_MAX_UPLOAD_BYTES`  | `100 MiB`          | Hard cap on `POST /media` body size.     |
 | `MEDIA_BLOB_DIR`          | `./var/blobs`      | Local blob store root.                   |
@@ -142,7 +142,7 @@ curl -s -X POST http://localhost:8080/media \
   "id":"01926d51-...",
   "name":"Goal of the season",
   "tags":["01926d4f-...","01926d50-..."],
-  "file_url":"/media/01926d51-.../file"
+  "fileUrl":"/media/01926d51-.../file"
 }
 ```
 
@@ -166,7 +166,7 @@ curl -s http://localhost:8080/media/01926d51-...
     {"id":"01926d4f-...","name":"messi"},
     {"id":"01926d50-...","name":"barcelona"}
   ],
-  "file_url":"/media/01926d51-.../file"
+  "fileUrl":"/media/01926d51-.../file"
 }
 ```
 

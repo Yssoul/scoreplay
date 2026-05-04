@@ -2,8 +2,11 @@
 INSERT INTO media (id, name, file_key, content_type, created_at)
 VALUES ($1, $2, $3, $4, $5);
 
--- name: AttachTag :exec
-INSERT INTO media_tags (media_id, tag_id) VALUES ($1, $2);
+-- name: AttachTags :exec
+-- Bulk-inserts (media_id, tag_id) pairs in a single round-trip by
+-- unnesting the tag id array against the media id scalar.
+INSERT INTO media_tags (media_id, tag_id)
+SELECT $1, UNNEST(@tag_ids::uuid[]);
 
 -- name: TagsExist :many
 SELECT id FROM tags WHERE id = ANY(@ids::uuid[]);

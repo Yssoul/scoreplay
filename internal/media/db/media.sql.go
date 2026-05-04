@@ -12,17 +12,20 @@ import (
 	"github.com/google/uuid"
 )
 
-const attachTag = `-- name: AttachTag :exec
-INSERT INTO media_tags (media_id, tag_id) VALUES ($1, $2)
+const attachTags = `-- name: AttachTags :exec
+INSERT INTO media_tags (media_id, tag_id)
+SELECT $1, UNNEST($2::uuid[])
 `
 
-type AttachTagParams struct {
+type AttachTagsParams struct {
 	MediaID uuid.UUID
-	TagID   uuid.UUID
+	TagIds  []uuid.UUID
 }
 
-func (q *Queries) AttachTag(ctx context.Context, arg AttachTagParams) error {
-	_, err := q.db.Exec(ctx, attachTag, arg.MediaID, arg.TagID)
+// Bulk-inserts (media_id, tag_id) pairs in a single round-trip by
+// unnesting the tag id array against the media id scalar.
+func (q *Queries) AttachTags(ctx context.Context, arg AttachTagsParams) error {
+	_, err := q.db.Exec(ctx, attachTags, arg.MediaID, arg.TagIds)
 	return err
 }
 
